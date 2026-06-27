@@ -556,6 +556,10 @@ Temperature approaches setpoint -> PID output decreases or stabilizes
 Temperature above setpoint -> PID output approaches 0%
 ```
 
+Example Output:
+
+<img width="796" height="692" alt="Ekran görüntüsü 2026-06-27 225051" src="https://github.com/user-attachments/assets/865d0e84-a13b-4a2a-b7f0-d5e36bf8cae6" />
+
 ---
 
 ## GUI Live Data
