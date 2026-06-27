@@ -29,8 +29,9 @@ class PIDTemperatureControllerGUI:
     def __init__(self, root):
         self.root = root
         self.root.title("STM32 PID Temperature Controller")
-        self.root.geometry("1080x900")
-        self.root.resizable(False, False)
+        self.root.geometry("1180x820")
+        self.root.minsize(1050, 720)
+        self.root.resizable(True, True)
 
         self.serial_port = None
         self.serial_thread = None
@@ -79,7 +80,7 @@ class PIDTemperatureControllerGUI:
         main_frame = tk.Frame(self.root, bg="#d7e8f6")
         main_frame.pack(fill=tk.BOTH, expand=True)
 
-        left_frame = tk.Frame(main_frame, bg="#d7e8f6", width=330)
+        left_frame = tk.Frame(main_frame, bg="#d7e8f6", width=380)
         left_frame.pack(side=tk.LEFT, fill=tk.Y, padx=15, pady=15)
 
         right_frame = tk.Frame(main_frame, bg="#d7e8f6")
@@ -201,7 +202,7 @@ class PIDTemperatureControllerGUI:
             padx=10,
             pady=10
         )
-        parameter_frame.pack(fill=tk.X, pady=15)
+        parameter_frame.pack(fill=tk.X, pady=8)
 
         self.setpoint_entry = self.create_parameter_row(
             parameter_frame,
@@ -225,7 +226,7 @@ class PIDTemperatureControllerGUI:
             padx=10,
             pady=10
         )
-        mode_frame.pack(fill=tk.X, pady=5)
+        mode_frame.pack(fill=tk.X, pady=4)
 
         tk.Label(mode_frame, text="Mode:", bg="#d7e8f6").grid(
             row=0,
@@ -252,7 +253,7 @@ class PIDTemperatureControllerGUI:
         self.mode_button.grid(row=0, column=2, padx=5, pady=5)
 
         control_frame = tk.Frame(left_frame, bg="#d7e8f6")
-        control_frame.pack(fill=tk.X, pady=15)
+        control_frame.pack(fill=tk.X, pady=8)
 
         self.start_button = tk.Button(
             control_frame,
@@ -276,7 +277,7 @@ class PIDTemperatureControllerGUI:
             width=26,
             command=self.clear_graph
         )
-        self.clear_button.grid(row=1, column=0, columnspan=2, pady=12)
+        self.clear_button.grid(row=1, column=0, columnspan=2, pady=8)
 
         live_frame = tk.LabelFrame(
             left_frame,
@@ -285,7 +286,7 @@ class PIDTemperatureControllerGUI:
             padx=10,
             pady=10
         )
-        live_frame.pack(fill=tk.X, pady=10)
+        live_frame.pack(fill=tk.X, pady=6)
 
         self.create_value_row(live_frame, "Temperature:", self.temperature_var, 0)
         self.create_value_row(live_frame, "Humidity:", self.humidity_var, 1)
@@ -300,7 +301,7 @@ class PIDTemperatureControllerGUI:
             padx=10,
             pady=10
         )
-        metrics_frame.pack(fill=tk.X, pady=10)
+        metrics_frame.pack(fill=tk.X, pady=6)
 
         self.create_value_row(metrics_frame, "Rise Time:", self.rise_time_var, 0)
         self.create_value_row(metrics_frame, "Settling Time:", self.settling_time_var, 1)
@@ -365,17 +366,31 @@ class PIDTemperatureControllerGUI:
         self.canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
 
     def create_value_row(self, parent, label_text, text_variable, row):
-        tk.Label(parent, text=label_text, bg="#d7e8f6").grid(
+        parent.grid_columnconfigure(1, weight=1)
+
+        tk.Label(
+            parent,
+            text=label_text,
+            bg="#d7e8f6",
+            anchor="w"
+        ).grid(
             row=row,
             column=0,
             sticky="w",
             pady=4
         )
 
-        tk.Label(parent, textvariable=text_variable, bg="#d7e8f6").grid(
+        tk.Label(
+            parent,
+            textvariable=text_variable,
+            bg="#d7e8f6",
+            anchor="w",
+            justify="left",
+            width=24
+        ).grid(
             row=row,
             column=1,
-            sticky="w",
+            sticky="ew",
             padx=8
         )
 
@@ -698,8 +713,8 @@ class PIDTemperatureControllerGUI:
             self.overshoot_var.set("--")
         else:
             self.overshoot_var.set(
-                f"{self.latched_overshoot_percent:.2f} % "
-                f"({self.latched_overshoot_value:.3f} °C)"
+                f"{self.latched_overshoot_percent:.2f}% / "
+                f"{self.latched_overshoot_value:.3f} °C"
             )
 
         if self.latest_steady_state_error is None:
