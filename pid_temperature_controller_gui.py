@@ -26,11 +26,56 @@ class PIDTemperatureControllerGUI:
         re.IGNORECASE
     )
 
+    PID_AUTOTUNE_RULES = {
+        "Ziegler-Nichols": {
+            "rule": "ziegler-nichols",
+            "kp": 7.66141138481997,
+            "ki": 0.4086086071903984,
+            "kd": 35.91286586634361
+        },
+        "Tyreus-Luyben": {
+            "rule": "tyreus-luyben",
+            "kp": 5.920181524633613,
+            "ki": 0.07104217829560336,
+            "kd": 35.239175741866745
+        },
+        "Ciancone-Marlin": {
+            "rule": "ciancone-marlin",
+            "kp": 3.9467876830890756,
+            "ki": 0.46308975481578485,
+            "kd": 18.272165199486462
+        },
+        "Pessen Integral": {
+            "rule": "pessen-integral",
+            "kp": 9.30314239585282,
+            "ki": 0.6202094930568547,
+            "kd": 52.46132929992192
+        },
+        "Some Overshoot": {
+            "rule": "some-overshoot",
+            "kp": 4.341466451397983,
+            "ki": 0.2315448774078924,
+            "kd": 54.26833064247478
+        },
+        "No Overshoot": {
+            "rule": "no-overshoot",
+            "kp": 2.60487987083879,
+            "ki": 0.13892692644473545,
+            "kd": 32.56099838548487
+        },
+        "Brewing": {
+            "rule": "brewing",
+            "kp": 104.1951948335516,
+            "ki": 0.8335615586684127,
+            "kd": 205.64841085569392
+        }
+    }
+
     def __init__(self, root):
         self.root = root
         self.root.title("STM32 PID Temperature Controller")
-        self.root.geometry("1180x820")
-        self.root.minsize(1050, 720)
+        self.root.geometry("1220x900")
+        self.root.minsize(1100, 760)
         self.root.resizable(True, True)
 
         self.serial_port = None
@@ -53,12 +98,16 @@ class PIDTemperatureControllerGUI:
         self.current_humidity = None
         self.current_pressure = None
         self.current_mode = "COOLING"
+        self.current_autotune_rule = None
 
         self.temperature_var = tk.StringVar(value="-- °C")
         self.humidity_var = tk.StringVar(value="-- %")
         self.pressure_var = tk.StringVar(value="-- hPa")
         self.pid_output_var = tk.StringVar(value="-- %")
         self.mode_var = tk.StringVar(value="COOLING")
+        self.autotune_info_var = tk.StringVar(
+            value="Select a rule to fill Kp, Ki and Kd."
+        )
 
         self.rise_time_var = tk.StringVar(value="--")
         self.settling_time_var = tk.StringVar(value="--")
@@ -80,8 +129,41 @@ class PIDTemperatureControllerGUI:
         main_frame = tk.Frame(self.root, bg="#d7e8f6")
         main_frame.pack(fill=tk.BOTH, expand=True)
 
-        left_frame = tk.Frame(main_frame, bg="#d7e8f6", width=380)
-        left_frame.pack(side=tk.LEFT, fill=tk.Y, padx=15, pady=15)
+        left_container = tk.Frame(main_frame, bg="#d7e8f6", width=390)
+        left_container.pack(side=tk.LEFT, fill=tk.Y, padx=15, pady=15)
+        left_container.pack_propagate(False)
+
+        left_canvas = tk.Canvas(
+            left_container,
+            bg="#d7e8f6",
+            highlightthickness=0,
+            width=370
+        )
+        left_scrollbar = ttk.Scrollbar(
+            left_container,
+            orient=tk.VERTICAL,
+            command=left_canvas.yview
+        )
+        left_frame = tk.Frame(left_canvas, bg="#d7e8f6")
+
+        left_window = left_canvas.create_window(
+            (0, 0),
+            window=left_frame,
+            anchor="nw"
+        )
+
+        def update_left_scroll_region(_event=None):
+            left_canvas.configure(scrollregion=left_canvas.bbox("all"))
+
+        def resize_left_window(event):
+            left_canvas.itemconfigure(left_window, width=event.width)
+
+        left_frame.bind("<Configure>", update_left_scroll_region)
+        left_canvas.bind("<Configure>", resize_left_window)
+        left_canvas.configure(yscrollcommand=left_scrollbar.set)
+
+        left_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        left_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
 
         right_frame = tk.Frame(main_frame, bg="#d7e8f6")
         right_frame.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True, padx=15, pady=15)
@@ -251,6 +333,54 @@ class PIDTemperatureControllerGUI:
             command=self.send_mode
         )
         self.mode_button.grid(row=0, column=2, padx=5, pady=5)
+
+        autotune_frame = tk.LabelFrame(
+            left_frame,
+            text="PID Autotune Presets",
+            bg="#d7e8f6",
+            padx=10,
+            pady=8
+        )
+        autotune_frame.pack(fill=tk.X, pady=5)
+
+        tk.Label(autotune_frame, text="Rule:", bg="#d7e8f6").grid(
+            row=0,
+            column=0,
+            sticky="w",
+            pady=4
+        )
+
+        self.autotune_combo = ttk.Combobox(
+            autotune_frame,
+            values=list(self.PID_AUTOTUNE_RULES.keys()),
+            width=18,
+            state="readonly"
+        )
+        self.autotune_combo.set("Select rule")
+        self.autotune_combo.grid(row=0, column=1, padx=8, pady=4, sticky="ew")
+        self.autotune_combo.bind(
+            "<<ComboboxSelected>>",
+            self.on_autotune_rule_selected
+        )
+
+        self.autotune_send_button = tk.Button(
+            autotune_frame,
+            text="SEND GAINS",
+            width=10,
+            command=self.send_autotune_gains
+        )
+        self.autotune_send_button.grid(row=0, column=2, padx=5, pady=4)
+
+        tk.Label(
+            autotune_frame,
+            textvariable=self.autotune_info_var,
+            bg="#d7e8f6",
+            anchor="w",
+            justify="left",
+            wraplength=330
+        ).grid(row=1, column=0, columnspan=3, sticky="ew", pady=(4, 0))
+
+        autotune_frame.grid_columnconfigure(1, weight=1)
 
         control_frame = tk.Frame(left_frame, bg="#d7e8f6")
         control_frame.pack(fill=tk.X, pady=8)
@@ -950,6 +1080,87 @@ class PIDTemperatureControllerGUI:
             self.current_mode = mode
             self.mode_var.set(mode)
             self.clear_graph()
+
+    def on_autotune_rule_selected(self, _event=None):
+        self.apply_autotune_rule(send_to_stm=False, show_message=False)
+
+    def get_selected_autotune_gains(self):
+        rule_name = self.autotune_combo.get().strip()
+
+        if rule_name not in self.PID_AUTOTUNE_RULES:
+            messagebox.showerror(
+                "Invalid Autotune Rule",
+                "Please select a valid PID autotune rule."
+            )
+            return None
+
+        return rule_name, self.PID_AUTOTUNE_RULES[rule_name]
+
+    @staticmethod
+    def format_gain(value):
+        return f"{value:.12g}"
+
+    @staticmethod
+    def set_entry_value(entry, value):
+        entry.delete(0, tk.END)
+        entry.insert(0, PIDTemperatureControllerGUI.format_gain(value))
+
+    def apply_autotune_rule(self, send_to_stm=False, show_message=True):
+        selected = self.get_selected_autotune_gains()
+
+        if selected is None:
+            return False
+
+        rule_name, gains = selected
+
+        self.set_entry_value(self.kp_entry, gains["kp"])
+        self.set_entry_value(self.ki_entry, gains["ki"])
+        self.set_entry_value(self.kd_entry, gains["kd"])
+
+        self.current_autotune_rule = gains["rule"]
+        self.autotune_info_var.set(
+            f"{rule_name}: Kp={self.format_gain(gains['kp'])}, "
+            f"Ki={self.format_gain(gains['ki'])}, "
+            f"Kd={self.format_gain(gains['kd'])}"
+        )
+
+        if send_to_stm:
+            if not self.serial_port or not self.serial_port.is_open:
+                messagebox.showwarning(
+                    "Serial Port Not Connected",
+                    "Autotune gains were applied to the GUI fields, but they "
+                    "were not sent to STM32 because the serial port is not connected."
+                )
+                return False
+
+            commands = [
+                f"KP:{self.format_gain(gains['kp'])}\r\n",
+                f"KI:{self.format_gain(gains['ki'])}\r\n",
+                f"KD:{self.format_gain(gains['kd'])}\r\n"
+            ]
+
+            for command in commands:
+                if not self.send_uart_command(command):
+                    return False
+
+            self.clear_graph()
+
+        if show_message:
+            if send_to_stm:
+                messagebox.showinfo(
+                    "Autotune Gains Sent",
+                    f"{rule_name} gains were applied and sent to STM32."
+                )
+            else:
+                messagebox.showinfo(
+                    "Autotune Gains Applied",
+                    f"{rule_name} gains were applied to the GUI fields."
+                )
+
+        return True
+
+    def send_autotune_gains(self):
+        self.apply_autotune_rule(send_to_stm=True, show_message=True)
 
     def get_float_from_entry(self, entry, name):
         try:
