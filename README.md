@@ -30,6 +30,7 @@ The STM32 firmware also sends telemetry data over UART. A Python Tkinter GUI rec
 - Real-time temperature and setpoint plotting
 - PID output / PWM percentage plotting
 - Cooling and heating mode selection
+- 7 presets for PID auto-tuning
 - Runtime PID parameter update from GUI
 - Runtime setpoint update from GUI
 - START / STOP control over UART
@@ -517,6 +518,53 @@ After selecting the correct COM port, click `Connect`.
 | Mode | Cooling or Heating control direction |
 
 When `START` is clicked, the GUI sends the selected mode, setpoint, and PID gains to STM32 before sending the `START` command.
+
+---
+
+## PID Auto-Tuning Presets
+
+The Python GUI includes a **PID Auto-Tuning Presets** section. This feature allows the user to select a predefined tuning rule and automatically fill the `Kp`, `Ki`, and `Kd` input fields with the corresponding gain values.
+
+This is a preset-based tuning feature. The GUI does not run an online identification procedure by itself; instead, it applies previously calculated PID gain values for the selected rule.
+
+Available tuning presets:
+
+| Rule | Kp | Ki | Kd | Notes |
+|---|---:|---:|---:|---|
+| Ziegler-Nichols | 7.66141138481997 | 0.4086086071903984 | 35.91286586634361 | Classic tuning rule, usually gives a faster and more aggressive response |
+| Tyreus-Luyben | 5.920181524633613 | 0.07104217829560336 | 35.239175741866745 | More conservative than Ziegler-Nichols, often useful for slower systems |
+| Ciancone-Marlin | 3.9467876830890756 | 0.46308975481578485 | 18.272165199486462 | Moderate controller response with lower proportional and derivative action |
+| Pessen Integral | 9.30314239585282 | 0.6202094930568547 | 52.46132929992192 | Aggressive tuning with strong integral and derivative action |
+| Some Overshoot | 4.341466451397983 | 0.2315448774078924 | 54.26833064247478 | Allows some overshoot while still controlling the response |
+| No Overshoot | 2.60487987083879 | 0.13892692644473545 | 32.56099838548487 | More conservative tuning intended to reduce overshoot |
+| Brewing | 104.1951948335516 | 0.8335615586684127 | 205.64841085569392 | Very aggressive gain set; use carefully with real hardware |
+
+### GUI Behavior
+
+When the user selects a tuning rule from the GUI, the corresponding `Kp`, `Ki`, and `Kd` values are written into the PID parameter input fields.
+
+If the user clicks the **SEND GAINS** button, the GUI sends only the selected PID gains to STM32:
+
+```text
+KP:<value>
+KI:<value>
+KD:<value>
+```
+
+If the user clicks **START**, the GUI sends the selected mode, setpoint, current PID gain values, and then the `START` command:
+
+```text
+MODE:COOLING
+SETPOINT:25.00
+KP:7.66141138481997
+KI:0.4086086071903984
+KD:35.91286586634361
+START
+```
+
+The STM32 firmware does not need a separate `AUTOTUNE` command for this feature. It receives the selected gain values through the existing `KP`, `KI`, and `KD` UART commands and updates the active PID controller parameters at runtime.
+
+For real fan or heater control, start with more conservative presets such as `No Overshoot` or `Tyreus-Luyben`. More aggressive presets can cause a stronger output response, especially in heating mode or when the actuator is powerful.
 
 ---
 
