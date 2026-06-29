@@ -29,9 +29,9 @@ class PIDTemperatureControllerGUI:
     PID_AUTOTUNE_RULES = {
         "Ziegler-Nichols": {
             "rule": "ziegler-nichols",
-            "kp": 7.66141138481997,
-            "ki": 0.4086086071903984,
-            "kd": 35.91286586634361
+            "kp": 0.6,
+            "ki": 0.5,
+            "kd": 0.125
         },
         "Tyreus-Luyben": {
             "rule": "tyreus-luyben",
