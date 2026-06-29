@@ -454,7 +454,7 @@ class PIDTemperatureControllerGUI:
         self.ax.set_xlabel("Sample")
         self.ax.set_ylabel("Temperature / Set Point (°C)")
         self.ax.set_xlim(0, 100)
-        self.ax.set_ylim(0, 40)
+        self.ax.set_ylim(0, 320)
         self.ax.grid(True)
 
         self.ax.yaxis.set_major_locator(MaxNLocator(nbins=8))
@@ -1005,7 +1005,7 @@ class PIDTemperatureControllerGUI:
             ]
 
             if left_values:
-                self.set_dynamic_ylim(self.ax, left_values, min_span=2.0)
+                self.ax.set_ylim(0, 320)
 
             if right_values:
                 self.set_dynamic_ylim(self.ax_pid, right_values, min_span=10.0)
@@ -1191,7 +1191,7 @@ class PIDTemperatureControllerGUI:
         self.sample_index = 0
 
         self.ax.set_xlim(0, 100)
-        self.ax.set_ylim(0, 40)
+        self.ax.set_ylim(0, 320)
         self.ax_pid.set_ylim(0, 100)
 
         self.reset_metrics()
