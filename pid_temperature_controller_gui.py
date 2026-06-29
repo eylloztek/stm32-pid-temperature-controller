@@ -26,7 +26,28 @@ class PIDTemperatureControllerGUI:
         re.IGNORECASE
     )
 
-    PID_AUTOTUNE_RULES = {
+    AUTOTUNE_STATE_PATTERN = re.compile(
+        r"\bAutotune\s*[:=]\s*([A-Za-z_]+)",
+        re.IGNORECASE
+    )
+
+    AUTOTUNE_RULE_PATTERN = re.compile(
+        r"\bRule\s*[:=]\s*([A-Za-z_]+)",
+        re.IGNORECASE
+    )
+
+    AUTOTUNE_REASON_PATTERN = re.compile(
+        r"\bReason\s*[:=]\s*([A-Za-z_]+)",
+        re.IGNORECASE
+    )
+
+    PID_AUTOTUNE_MODES = {
+        "Basic PID": "BASIC",
+        "Less Overshoot": "LESS_OVERSHOOT",
+        "No Overshoot": "NO_OVERSHOOT"
+    }
+
+    PID_GAIN_PRESETS = {
         "Ziegler-Nichols": {
             "rule": "ziegler-nichols",
             "kp": 0.6,
@@ -98,16 +119,29 @@ class PIDTemperatureControllerGUI:
         self.current_humidity = None
         self.current_pressure = None
         self.current_mode = "COOLING"
-        self.current_autotune_rule = None
+        self.current_autotune_mode = "NO_OVERSHOOT"
+        self.current_gain_preset = None
 
         self.temperature_var = tk.StringVar(value="-- °C")
         self.humidity_var = tk.StringVar(value="-- %")
         self.pressure_var = tk.StringVar(value="-- hPa")
         self.pid_output_var = tk.StringVar(value="-- %")
         self.mode_var = tk.StringVar(value="COOLING")
-        self.autotune_info_var = tk.StringVar(
-            value="Select a rule to fill Kp, Ki and Kd."
+        self.gain_preset_info_var = tk.StringVar(
+            value="Select a preset to fill Kp, Ki and Kd manually."
         )
+        self.autotune_info_var = tk.StringVar(
+            value="STM32 relay autotune will calculate Kp, Ki and Kd."
+        )
+        self.autotune_status_var = tk.StringVar(value="IDLE")
+        self.autotune_cycle_var = tk.StringVar(value="--")
+        self.autotune_output_var = tk.StringVar(value="-- %")
+        self.autotune_ku_var = tk.StringVar(value="--")
+        self.autotune_tu_var = tk.StringVar(value="-- s")
+        self.autotune_kp_var = tk.StringVar(value="--")
+        self.autotune_ki_var = tk.StringVar(value="--")
+        self.autotune_kd_var = tk.StringVar(value="--")
+        self.autotune_rule_var = tk.StringVar(value="NO_OVERSHOOT")
 
         self.rise_time_var = tk.StringVar(value="--")
         self.settling_time_var = tk.StringVar(value="--")
@@ -334,42 +368,131 @@ class PIDTemperatureControllerGUI:
         )
         self.mode_button.grid(row=0, column=2, padx=5, pady=5)
 
-        autotune_frame = tk.LabelFrame(
+        preset_frame = tk.LabelFrame(
             left_frame,
-            text="PID Autotune Presets",
+            text="Manual PID Gain Presets",
             bg="#d7e8f6",
             padx=10,
             pady=8
         )
-        autotune_frame.pack(fill=tk.X, pady=5)
+        preset_frame.pack(fill=tk.X, pady=5)
 
-        tk.Label(autotune_frame, text="Rule:", bg="#d7e8f6").grid(
+        tk.Label(preset_frame, text="Preset:", bg="#d7e8f6").grid(
             row=0,
             column=0,
             sticky="w",
             pady=4
         )
 
-        self.autotune_combo = ttk.Combobox(
-            autotune_frame,
-            values=list(self.PID_AUTOTUNE_RULES.keys()),
+        self.gain_preset_combo = ttk.Combobox(
+            preset_frame,
+            values=list(self.PID_GAIN_PRESETS.keys()),
             width=18,
             state="readonly"
         )
-        self.autotune_combo.set("Select rule")
-        self.autotune_combo.grid(row=0, column=1, padx=8, pady=4, sticky="ew")
-        self.autotune_combo.bind(
+        self.gain_preset_combo.set("Select preset")
+        self.gain_preset_combo.grid(row=0, column=1, padx=8, pady=4, sticky="ew")
+        self.gain_preset_combo.bind(
             "<<ComboboxSelected>>",
-            self.on_autotune_rule_selected
+            self.on_gain_preset_selected
         )
 
-        self.autotune_send_button = tk.Button(
-            autotune_frame,
-            text="SEND GAINS",
-            width=10,
-            command=self.send_autotune_gains
+        self.gain_preset_send_button = tk.Button(
+            preset_frame,
+            text="SEND PRESET",
+            width=12,
+            command=self.send_gain_preset
         )
-        self.autotune_send_button.grid(row=0, column=2, padx=5, pady=4)
+        self.gain_preset_send_button.grid(row=0, column=2, padx=5, pady=4)
+
+        tk.Label(
+            preset_frame,
+            textvariable=self.gain_preset_info_var,
+            bg="#d7e8f6",
+            anchor="w",
+            justify="left",
+            wraplength=330
+        ).grid(row=1, column=0, columnspan=3, sticky="ew", pady=(4, 0))
+
+        preset_frame.grid_columnconfigure(1, weight=1)
+
+        autotune_frame = tk.LabelFrame(
+            left_frame,
+            text="PID Autotune",
+            bg="#d7e8f6",
+            padx=10,
+            pady=8
+        )
+        autotune_frame.pack(fill=tk.X, pady=5)
+
+        tk.Label(autotune_frame, text="ZN Mode:", bg="#d7e8f6").grid(
+            row=0,
+            column=0,
+            sticky="w",
+            pady=4
+        )
+
+        self.autotune_mode_combo = ttk.Combobox(
+            autotune_frame,
+            values=list(self.PID_AUTOTUNE_MODES.keys()),
+            width=18,
+            state="readonly"
+        )
+        self.autotune_mode_combo.set("No Overshoot")
+        self.autotune_mode_combo.grid(row=0, column=1, padx=8, pady=4, sticky="ew")
+        self.autotune_mode_combo.bind(
+            "<<ComboboxSelected>>",
+            self.on_autotune_mode_selected
+        )
+
+        tk.Label(autotune_frame, text="Cycles:", bg="#d7e8f6").grid(
+            row=1,
+            column=0,
+            sticky="w",
+            pady=4
+        )
+
+        self.autotune_cycles_entry = tk.Entry(autotune_frame, width=10)
+        self.autotune_cycles_entry.insert(0, "6")
+        self.autotune_cycles_entry.grid(row=1, column=1, padx=8, pady=4, sticky="w")
+
+        tk.Label(autotune_frame, text="Min Output (%):", bg="#d7e8f6").grid(
+            row=2,
+            column=0,
+            sticky="w",
+            pady=4
+        )
+
+        self.autotune_min_output_entry = tk.Entry(autotune_frame, width=10)
+        self.autotune_min_output_entry.insert(0, "0")
+        self.autotune_min_output_entry.grid(row=2, column=1, padx=8, pady=4, sticky="w")
+
+        tk.Label(autotune_frame, text="Max Output (%):", bg="#d7e8f6").grid(
+            row=3,
+            column=0,
+            sticky="w",
+            pady=4
+        )
+
+        self.autotune_max_output_entry = tk.Entry(autotune_frame, width=10)
+        self.autotune_max_output_entry.insert(0, "100")
+        self.autotune_max_output_entry.grid(row=3, column=1, padx=8, pady=4, sticky="w")
+
+        self.autotune_start_button = tk.Button(
+            autotune_frame,
+            text="START AUTOTUNE",
+            width=15,
+            command=self.start_autotune
+        )
+        self.autotune_start_button.grid(row=4, column=0, padx=5, pady=8)
+
+        self.autotune_stop_button = tk.Button(
+            autotune_frame,
+            text="STOP AUTOTUNE",
+            width=15,
+            command=self.stop_autotune
+        )
+        self.autotune_stop_button.grid(row=4, column=1, padx=5, pady=8, sticky="w")
 
         tk.Label(
             autotune_frame,
@@ -378,7 +501,17 @@ class PIDTemperatureControllerGUI:
             anchor="w",
             justify="left",
             wraplength=330
-        ).grid(row=1, column=0, columnspan=3, sticky="ew", pady=(4, 0))
+        ).grid(row=5, column=0, columnspan=3, sticky="ew", pady=(2, 6))
+
+        self.create_value_row(autotune_frame, "Status:", self.autotune_status_var, 6)
+        self.create_value_row(autotune_frame, "Cycle:", self.autotune_cycle_var, 7)
+        self.create_value_row(autotune_frame, "Relay Output:", self.autotune_output_var, 8)
+        self.create_value_row(autotune_frame, "Ku:", self.autotune_ku_var, 9)
+        self.create_value_row(autotune_frame, "Tu:", self.autotune_tu_var, 10)
+        self.create_value_row(autotune_frame, "Result Kp:", self.autotune_kp_var, 11)
+        self.create_value_row(autotune_frame, "Result Ki:", self.autotune_ki_var, 12)
+        self.create_value_row(autotune_frame, "Result Kd:", self.autotune_kd_var, 13)
+        self.create_value_row(autotune_frame, "Rule:", self.autotune_rule_var, 14)
 
         autotune_frame.grid_columnconfigure(1, weight=1)
 
@@ -641,6 +774,9 @@ class PIDTemperatureControllerGUI:
             if line == "SERIAL_ERROR":
                 self.disconnect_serial()
                 messagebox.showerror("Serial Error", "Serial connection lost.")
+                continue
+
+            if self.handle_autotune_line(line):
                 continue
 
             parsed = self.parse_uart_data(line)
@@ -1081,45 +1217,36 @@ class PIDTemperatureControllerGUI:
             self.mode_var.set(mode)
             self.clear_graph()
 
-    def on_autotune_rule_selected(self, _event=None):
-        self.apply_autotune_rule(send_to_stm=False, show_message=False)
+    def on_gain_preset_selected(self, _event=None):
+        self.apply_gain_preset(send_to_stm=False, show_message=False)
 
-    def get_selected_autotune_gains(self):
-        rule_name = self.autotune_combo.get().strip()
+    def get_selected_gain_preset(self):
+        preset_name = self.gain_preset_combo.get().strip()
 
-        if rule_name not in self.PID_AUTOTUNE_RULES:
+        if preset_name not in self.PID_GAIN_PRESETS:
             messagebox.showerror(
-                "Invalid Autotune Rule",
-                "Please select a valid PID autotune rule."
+                "Invalid Gain Preset",
+                "Please select a valid manual PID gain preset."
             )
             return None
 
-        return rule_name, self.PID_AUTOTUNE_RULES[rule_name]
+        return preset_name, self.PID_GAIN_PRESETS[preset_name]
 
-    @staticmethod
-    def format_gain(value):
-        return f"{value:.12g}"
-
-    @staticmethod
-    def set_entry_value(entry, value):
-        entry.delete(0, tk.END)
-        entry.insert(0, PIDTemperatureControllerGUI.format_gain(value))
-
-    def apply_autotune_rule(self, send_to_stm=False, show_message=True):
-        selected = self.get_selected_autotune_gains()
+    def apply_gain_preset(self, send_to_stm=False, show_message=True):
+        selected = self.get_selected_gain_preset()
 
         if selected is None:
             return False
 
-        rule_name, gains = selected
+        preset_name, gains = selected
 
         self.set_entry_value(self.kp_entry, gains["kp"])
         self.set_entry_value(self.ki_entry, gains["ki"])
         self.set_entry_value(self.kd_entry, gains["kd"])
 
-        self.current_autotune_rule = gains["rule"]
-        self.autotune_info_var.set(
-            f"{rule_name}: Kp={self.format_gain(gains['kp'])}, "
+        self.current_gain_preset = gains["rule"]
+        self.gain_preset_info_var.set(
+            f"{preset_name}: Kp={self.format_gain(gains['kp'])}, "
             f"Ki={self.format_gain(gains['ki'])}, "
             f"Kd={self.format_gain(gains['kd'])}"
         )
@@ -1128,7 +1255,7 @@ class PIDTemperatureControllerGUI:
             if not self.serial_port or not self.serial_port.is_open:
                 messagebox.showwarning(
                     "Serial Port Not Connected",
-                    "Autotune gains were applied to the GUI fields, but they "
+                    "Preset gains were applied to the GUI fields, but they "
                     "were not sent to STM32 because the serial port is not connected."
                 )
                 return False
@@ -1148,19 +1275,286 @@ class PIDTemperatureControllerGUI:
         if show_message:
             if send_to_stm:
                 messagebox.showinfo(
-                    "Autotune Gains Sent",
-                    f"{rule_name} gains were applied and sent to STM32."
+                    "Preset Gains Sent",
+                    f"{preset_name} gains were applied and sent to STM32."
                 )
             else:
                 messagebox.showinfo(
-                    "Autotune Gains Applied",
-                    f"{rule_name} gains were applied to the GUI fields."
+                    "Preset Gains Applied",
+                    f"{preset_name} gains were applied to the GUI fields."
                 )
 
         return True
 
-    def send_autotune_gains(self):
-        self.apply_autotune_rule(send_to_stm=True, show_message=True)
+    def send_gain_preset(self):
+        self.apply_gain_preset(send_to_stm=True, show_message=True)
+
+    def on_autotune_mode_selected(self, _event=None):
+        selected_label = self.autotune_mode_combo.get().strip()
+        selected_mode = self.PID_AUTOTUNE_MODES.get(selected_label)
+
+        if selected_mode is None:
+            return
+
+        self.current_autotune_mode = selected_mode
+        self.autotune_rule_var.set(selected_mode)
+        self.autotune_info_var.set(
+            f"Selected STM32 autotune mode: {selected_mode}. "
+            "Press START AUTOTUNE to run relay tuning on the board."
+        )
+
+    def get_selected_autotune_mode(self):
+        selected_label = self.autotune_mode_combo.get().strip()
+        selected_mode = self.PID_AUTOTUNE_MODES.get(selected_label)
+
+        if selected_mode is None:
+            messagebox.showerror(
+                "Invalid Autotune Mode",
+                "Please select a valid Ziegler-Nichols autotune mode."
+            )
+            return None
+
+        return selected_mode
+
+    @staticmethod
+    def format_gain(value):
+        return f"{value:.12g}"
+
+    @staticmethod
+    def set_entry_value(entry, value):
+        entry.delete(0, tk.END)
+        entry.insert(0, PIDTemperatureControllerGUI.format_gain(value))
+
+    def get_int_from_entry(self, entry, name, minimum=None, maximum=None):
+        try:
+            value = int(entry.get())
+        except ValueError:
+            messagebox.showerror("Invalid Value", f"{name} must be an integer.")
+            return None
+
+        if minimum is not None and value < minimum:
+            messagebox.showerror(
+                "Invalid Value",
+                f"{name} must be greater than or equal to {minimum}."
+            )
+            return None
+
+        if maximum is not None and value > maximum:
+            messagebox.showerror(
+                "Invalid Value",
+                f"{name} must be less than or equal to {maximum}."
+            )
+            return None
+
+        return value
+
+    def reset_autotune_display(self):
+        self.autotune_status_var.set("STARTING")
+        self.autotune_cycle_var.set("--")
+        self.autotune_output_var.set("-- %")
+        self.autotune_ku_var.set("--")
+        self.autotune_tu_var.set("-- s")
+        self.autotune_kp_var.set("--")
+        self.autotune_ki_var.set("--")
+        self.autotune_kd_var.set("--")
+
+    def start_autotune(self):
+        if not self.serial_port or not self.serial_port.is_open:
+            messagebox.showwarning("Warning", "Serial port is not connected.")
+            return
+
+        setpoint = self.get_float_from_entry(self.setpoint_entry, "Set Point")
+        cycles = self.get_int_from_entry(
+            self.autotune_cycles_entry,
+            "Autotune cycles",
+            minimum=3,
+            maximum=30
+        )
+        min_output = self.get_float_from_entry(
+            self.autotune_min_output_entry,
+            "Autotune min output"
+        )
+        max_output = self.get_float_from_entry(
+            self.autotune_max_output_entry,
+            "Autotune max output"
+        )
+        control_mode = self.mode_combo.get().strip().upper()
+        autotune_mode = self.get_selected_autotune_mode()
+
+        if (
+            setpoint is None or cycles is None or min_output is None
+            or max_output is None or autotune_mode is None
+        ):
+            return
+
+        if control_mode not in ("COOLING", "HEATING"):
+            messagebox.showerror("Invalid Mode", "Mode must be COOLING or HEATING.")
+            return
+
+        if min_output < 0.0 or max_output > 100.0 or min_output >= max_output:
+            messagebox.showerror(
+                "Invalid Output Range",
+                "Autotune min/max output must satisfy 0 <= min < max <= 100."
+            )
+            return
+
+        commands = [
+            f"MODE:{control_mode}\r\n",
+            f"SETPOINT:{setpoint:.2f}\r\n",
+            f"AUTOTUNE_MODE:{autotune_mode}\r\n",
+            f"AUTOTUNE_CYCLES:{cycles}\r\n",
+            f"AUTOTUNE_MIN_OUTPUT:{min_output:.2f}\r\n",
+            f"AUTOTUNE_MAX_OUTPUT:{max_output:.2f}\r\n",
+            "AUTOTUNE_START\r\n"
+        ]
+
+        for command in commands:
+            if not self.send_uart_command(command):
+                return
+
+        self.current_setpoint = setpoint
+        self.current_mode = control_mode
+        self.current_autotune_mode = autotune_mode
+        self.mode_var.set(control_mode)
+        self.autotune_rule_var.set(autotune_mode)
+        self.autotune_info_var.set(
+            "STM32 relay autotune is running. "
+            "The board will calculate Kp, Ki and Kd from Ku and Tu."
+        )
+        self.reset_autotune_display()
+        self.clear_graph()
+        self.plot_enabled = True
+
+    def stop_autotune(self):
+        if self.send_uart_command("AUTOTUNE_STOP\r\n"):
+            self.plot_enabled = False
+            self.autotune_status_var.set("STOP REQUESTED")
+            self.autotune_info_var.set("Autotune stop command was sent to STM32.")
+
+    def handle_autotune_line(self, line):
+        state_match = self.AUTOTUNE_STATE_PATTERN.search(line)
+
+        if not state_match:
+            return False
+
+        state = state_match.group(1).strip().upper().replace(" ", "_")
+        values = self.parse_numeric_fields(line)
+
+        rule_match = self.AUTOTUNE_RULE_PATTERN.search(line)
+        if rule_match:
+            rule = self.normalize_autotune_rule(rule_match.group(1))
+            self.current_autotune_mode = rule
+            self.autotune_rule_var.set(rule)
+
+        if state == "RUNNING":
+            self.update_autotune_running_values(values)
+        elif state == "DONE":
+            self.update_autotune_done_values(values)
+        elif state == "STOPPED":
+            self.update_autotune_stopped_values(line)
+        else:
+            self.autotune_status_var.set(state)
+
+        return True
+
+    def parse_numeric_fields(self, line):
+        matches = self.UART_VALUE_PATTERN.findall(line)
+        data = {}
+
+        for key, value in matches:
+            normalized_key = self.normalize_key(key)
+
+            try:
+                data[normalized_key] = float(value)
+            except ValueError:
+                continue
+
+        return data
+
+    def update_autotune_running_values(self, values):
+        cycle = values.get("cycle")
+        target_cycles = values.get("targetcycles")
+        output = values.get("output")
+        temperature = values.get("temperature")
+        ku = values.get("ku")
+        tu = values.get("tu")
+
+        self.autotune_status_var.set("RUNNING")
+
+        if cycle is not None and target_cycles is not None:
+            self.autotune_cycle_var.set(f"{int(cycle)} / {int(target_cycles)}")
+        elif cycle is not None:
+            self.autotune_cycle_var.set(f"{int(cycle)}")
+
+        if output is not None:
+            self.autotune_output_var.set(f"{output:.2f} %")
+            self.pid_output_var.set(f"{output:.2f} %")
+
+        if temperature is not None:
+            self.temperature_var.set(f"{temperature:.2f} °C")
+
+        if ku is not None:
+            self.autotune_ku_var.set(f"{ku:.6f}")
+
+        if tu is not None:
+            self.autotune_tu_var.set(f"{tu:.3f} s")
+
+    def update_autotune_done_values(self, values):
+        kp = values.get("kp")
+        ki = values.get("ki")
+        kd = values.get("kd")
+        ku = values.get("ku")
+        tu = values.get("tu")
+
+        self.autotune_status_var.set("DONE")
+        self.autotune_info_var.set(
+            "Autotune completed. Calculated Kp, Ki and Kd were applied "
+            "to the GUI fields."
+        )
+
+        if kp is not None:
+            self.autotune_kp_var.set(f"{kp:.6f}")
+            self.set_entry_value(self.kp_entry, kp)
+
+        if ki is not None:
+            self.autotune_ki_var.set(f"{ki:.6f}")
+            self.set_entry_value(self.ki_entry, ki)
+
+        if kd is not None:
+            self.autotune_kd_var.set(f"{kd:.6f}")
+            self.set_entry_value(self.kd_entry, kd)
+
+        if ku is not None:
+            self.autotune_ku_var.set(f"{ku:.6f}")
+
+        if tu is not None:
+            self.autotune_tu_var.set(f"{tu:.3f} s")
+
+    def update_autotune_stopped_values(self, line):
+        reason = "UNKNOWN"
+        reason_match = self.AUTOTUNE_REASON_PATTERN.search(line)
+
+        if reason_match:
+            reason = reason_match.group(1).strip().upper().replace(" ", "_")
+
+        self.plot_enabled = False
+        self.autotune_status_var.set(f"STOPPED: {reason}")
+        self.autotune_info_var.set(f"Autotune stopped by STM32. Reason: {reason}.")
+
+    @staticmethod
+    def normalize_autotune_rule(rule):
+        normalized = rule.strip().upper().replace(" ", "_").replace("-", "_")
+
+        if normalized in ("BASIC", "BASIC_PID", "ZN_BASIC_PID"):
+            return "BASIC"
+
+        if normalized in ("LESS", "LESS_OVERSHOOT", "ZN_LESS_OVERSHOOT"):
+            return "LESS_OVERSHOOT"
+
+        if normalized in ("NO", "NO_OVERSHOOT", "ZN_NO_OVERSHOOT"):
+            return "NO_OVERSHOOT"
+
+        return normalized
 
     def get_float_from_entry(self, entry, name):
         try:
