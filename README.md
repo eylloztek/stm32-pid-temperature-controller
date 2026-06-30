@@ -1016,7 +1016,7 @@ stm32-bme280-pid-temperature-controller/
 │   │       ├── logger.c
 │   │       └── menu.c
 │   ├── Drivers/
-│   └── STM32F446RETX_FLASH_pid_storage.ld
+│   └── STM32F446RETX_FLASH.ld
 │
 ├── GUI/
 │   ├── pid_temperature_controller_gui.py
