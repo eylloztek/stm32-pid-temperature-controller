@@ -551,6 +551,10 @@ Main GUI sections:
 
 ---
 
+<img width="1279" height="763" alt="image" src="https://github.com/user-attachments/assets/46189818-ec49-482e-8142-02f50bf6ab45" />
+
+---
+
 ## GUI Serial Settings
 
 The GUI should match the STM32 USART2 configuration:
@@ -709,10 +713,6 @@ Temperature below setpoint -> PID output increases
 Temperature approaches setpoint -> PID output decreases or stabilizes
 Temperature above setpoint -> PID output approaches 0%
 ```
-
-Example Output:
-
-<img width="796" height="692" alt="Ekran görüntüsü 2026-06-27 225051" src="https://github.com/user-attachments/assets/865d0e84-a13b-4a2a-b7f0-d5e36bf8cae6" />
 
 ---
 
