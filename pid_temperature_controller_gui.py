@@ -1,11 +1,14 @@
 import tkinter as tk
 from tkinter import ttk, messagebox
 
+import json
 import math
 import queue
 import re
 import threading
 from collections import deque
+from datetime import datetime
+from pathlib import Path
 
 import serial
 import serial.tools.list_ports
@@ -19,6 +22,16 @@ class PIDTemperatureControllerGUI:
     UART_VALUE_PATTERN = re.compile(
         r"([A-Za-z][A-Za-z0-9_ °C%/-]*)\s*[:=]\s*"
         r"([+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?)"
+    )
+
+    KEYED_NUMERIC_PATTERN = re.compile(
+        r"\b("
+        r"Set\s*Point|Target\s*Cycles|PID\s*Output|Fan\s*PWM|"
+        r"Measured\s*Temperature|Temperature|Humidity|Pressure|"
+        r"Cycle|Output|PWM|Temp|Ku|Tu|Kp|Ki|Kd"
+        r")\s*[:=]\s*"
+        r"([+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?)",
+        re.IGNORECASE
     )
 
     UART_MODE_PATTERN = re.compile(
@@ -38,6 +51,11 @@ class PIDTemperatureControllerGUI:
 
     AUTOTUNE_REASON_PATTERN = re.compile(
         r"\bReason\s*[:=]\s*([A-Za-z_]+)",
+        re.IGNORECASE
+    )
+
+    SAVED_PID_STATE_PATTERN = re.compile(
+        r"\bSavedPID\s*[:=]\s*([A-Za-z_]+)",
         re.IGNORECASE
     )
 
@@ -92,6 +110,17 @@ class PIDTemperatureControllerGUI:
         }
     }
 
+    SAVE_DESTINATIONS = (
+        "GUI",
+        "STM32 Flash",
+        "GUI + STM32 Flash"
+    )
+
+    LOAD_SOURCES = (
+        "GUI",
+        "STM32 Flash"
+    )
+
     def __init__(self, root):
         self.root = root
         self.root.title("STM32 PID Temperature Controller")
@@ -121,6 +150,9 @@ class PIDTemperatureControllerGUI:
         self.current_mode = "COOLING"
         self.current_autotune_mode = "NO_OVERSHOOT"
         self.current_gain_preset = None
+        self.local_pid_config_path = Path(__file__).resolve().with_name(
+            "saved_pid_values.json"
+        )
 
         self.temperature_var = tk.StringVar(value="-- °C")
         self.humidity_var = tk.StringVar(value="-- %")
@@ -142,6 +174,11 @@ class PIDTemperatureControllerGUI:
         self.autotune_ki_var = tk.StringVar(value="--")
         self.autotune_kd_var = tk.StringVar(value="--")
         self.autotune_rule_var = tk.StringVar(value="NO_OVERSHOOT")
+
+        self.saved_pid_status_var = tk.StringVar(value="IDLE")
+        self.saved_pid_info_var = tk.StringVar(
+            value="Save or load PID values from the GUI config file or STM32 Flash."
+        )
 
         self.rise_time_var = tk.StringVar(value="--")
         self.settling_time_var = tk.StringVar(value="--")
@@ -515,6 +552,93 @@ class PIDTemperatureControllerGUI:
 
         autotune_frame.grid_columnconfigure(1, weight=1)
 
+        saved_pid_frame = tk.LabelFrame(
+            left_frame,
+            text="Saved PID Values",
+            bg="#d7e8f6",
+            padx=10,
+            pady=8
+        )
+        saved_pid_frame.pack(fill=tk.X, pady=5)
+
+        tk.Label(saved_pid_frame, text="Save to:", bg="#d7e8f6").grid(
+            row=0,
+            column=0,
+            sticky="w",
+            pady=4
+        )
+
+        self.saved_pid_destination_combo = ttk.Combobox(
+            saved_pid_frame,
+            values=self.SAVE_DESTINATIONS,
+            width=18,
+            state="readonly"
+        )
+        self.saved_pid_destination_combo.set("GUI + STM32 Flash")
+        self.saved_pid_destination_combo.grid(
+            row=0,
+            column=1,
+            padx=8,
+            pady=4,
+            sticky="ew"
+        )
+
+        self.saved_pid_save_button = tk.Button(
+            saved_pid_frame,
+            text="SAVE PID VALUES",
+            width=16,
+            command=self.save_pid_values
+        )
+        self.saved_pid_save_button.grid(row=0, column=2, padx=5, pady=4)
+
+        tk.Label(saved_pid_frame, text="Load from:", bg="#d7e8f6").grid(
+            row=1,
+            column=0,
+            sticky="w",
+            pady=4
+        )
+
+        self.saved_pid_load_source_combo = ttk.Combobox(
+            saved_pid_frame,
+            values=self.LOAD_SOURCES,
+            width=18,
+            state="readonly"
+        )
+        self.saved_pid_load_source_combo.set("GUI")
+        self.saved_pid_load_source_combo.grid(
+            row=1,
+            column=1,
+            padx=8,
+            pady=4,
+            sticky="ew"
+        )
+
+        self.saved_pid_load_button = tk.Button(
+            saved_pid_frame,
+            text="LOAD PID VALUES",
+            width=16,
+            command=self.load_pid_values
+        )
+        self.saved_pid_load_button.grid(row=1, column=2, padx=5, pady=4)
+
+        tk.Label(
+            saved_pid_frame,
+            textvariable=self.saved_pid_info_var,
+            bg="#d7e8f6",
+            anchor="w",
+            justify="left",
+            wraplength=330
+        ).grid(row=2, column=0, columnspan=3, sticky="ew", pady=(4, 4))
+
+        self.create_value_row(
+            saved_pid_frame,
+            "Saved PID Status:",
+            self.saved_pid_status_var,
+            3
+        )
+
+        saved_pid_frame.grid_columnconfigure(1, weight=1)
+
         control_frame = tk.Frame(left_frame, bg="#d7e8f6")
         control_frame.pack(fill=tk.X, pady=8)
 
@@ -774,6 +898,9 @@ class PIDTemperatureControllerGUI:
             if line == "SERIAL_ERROR":
                 self.disconnect_serial()
                 messagebox.showerror("Serial Error", "Serial connection lost.")
+                continue
+
+            if self.handle_saved_pid_line(line):
                 continue
 
             if self.handle_autotune_line(line):
@@ -1289,6 +1416,235 @@ class PIDTemperatureControllerGUI:
     def send_gain_preset(self):
         self.apply_gain_preset(send_to_stm=True, show_message=True)
 
+
+    def get_current_pid_config(self):
+        setpoint = self.get_float_from_entry(self.setpoint_entry, "Set Point")
+        kp = self.get_float_from_entry(self.kp_entry, "Kp")
+        ki = self.get_float_from_entry(self.ki_entry, "Ki")
+        kd = self.get_float_from_entry(self.kd_entry, "Kd")
+        mode = self.mode_combo.get().strip().upper()
+
+        if setpoint is None or kp is None or ki is None or kd is None:
+            return None
+
+        if mode not in ("COOLING", "HEATING"):
+            messagebox.showerror("Invalid Mode", "Mode must be COOLING or HEATING.")
+            return None
+
+        return {
+            "version": 1,
+            "kp": kp,
+            "ki": ki,
+            "kd": kd,
+            "setpoint": setpoint,
+            "mode": mode
+        }
+
+    def apply_pid_config_to_gui(self, config):
+        required_keys = ("kp", "ki", "kd", "setpoint", "mode")
+
+        for key in required_keys:
+            if key not in config:
+                raise ValueError(f"Missing '{key}' in saved PID config.")
+
+        kp = float(config["kp"])
+        ki = float(config["ki"])
+        kd = float(config["kd"])
+        setpoint = float(config["setpoint"])
+        mode = str(config["mode"]).strip().upper()
+
+        if mode not in ("COOLING", "HEATING"):
+            raise ValueError("Saved mode must be COOLING or HEATING.")
+
+        self.set_entry_value(self.kp_entry, kp)
+        self.set_entry_value(self.ki_entry, ki)
+        self.set_entry_value(self.kd_entry, kd)
+        self.set_entry_value(self.setpoint_entry, setpoint)
+        self.mode_combo.set(mode)
+
+        self.current_setpoint = setpoint
+        self.current_mode = mode
+        self.mode_var.set(mode)
+
+    def save_pid_values(self):
+        destination = self.saved_pid_destination_combo.get().strip()
+        config = self.get_current_pid_config()
+
+        if config is None:
+            return
+
+        saved_to_gui = False
+        requested_stm32_save = False
+
+        if destination in ("GUI", "GUI + STM32 Flash"):
+            saved_to_gui = self.save_pid_values_to_gui(config)
+
+        if destination in ("STM32 Flash", "GUI + STM32 Flash"):
+            requested_stm32_save = self.save_pid_values_to_stm32_flash(config)
+
+        if saved_to_gui and requested_stm32_save:
+            self.saved_pid_info_var.set(
+                "PID values were saved to the GUI file and the STM32 Flash "
+                "save request was sent."
+            )
+        elif saved_to_gui:
+            self.saved_pid_info_var.set(
+                f"PID values were saved to {self.local_pid_config_path.name}."
+            )
+
+    def save_pid_values_to_gui(self, config):
+        config_to_save = dict(config)
+        config_to_save["saved_at"] = datetime.now().isoformat(timespec="seconds")
+
+        try:
+            self.local_pid_config_path.write_text(
+                json.dumps(config_to_save, indent=4),
+                encoding="utf-8"
+            )
+        except OSError as exc:
+            messagebox.showerror("Save Error", str(exc))
+            self.saved_pid_status_var.set("GUI SAVE FAILED")
+            return False
+
+        self.saved_pid_status_var.set("SAVED TO GUI")
+        return True
+
+    def save_pid_values_to_stm32_flash(self, config):
+        if not self.serial_port or not self.serial_port.is_open:
+            messagebox.showwarning(
+                "Serial Port Not Connected",
+                "PID values were not saved to STM32 Flash because the serial "
+                "port is not connected."
+            )
+            self.saved_pid_status_var.set("STM32 SAVE NOT SENT")
+            return False
+
+        commands = [
+            f"MODE:{config['mode']}\r\n",
+            f"SETPOINT:{config['setpoint']:.2f}\r\n",
+            f"KP:{self.format_gain(config['kp'])}\r\n",
+            f"KI:{self.format_gain(config['ki'])}\r\n",
+            f"KD:{self.format_gain(config['kd'])}\r\n",
+            "SAVE_PID_FLASH\r\n"
+        ]
+
+        for command in commands:
+            if not self.send_uart_command(command):
+                self.saved_pid_status_var.set("STM32 SAVE FAILED")
+                return False
+
+        self.saved_pid_status_var.set("STM32 SAVE REQUESTED")
+        self.saved_pid_info_var.set("STM32 Flash save command was sent.")
+        return True
+
+    def load_pid_values(self):
+        source = self.saved_pid_load_source_combo.get().strip()
+
+        if source == "GUI":
+            self.load_pid_values_from_gui()
+        elif source == "STM32 Flash":
+            self.load_pid_values_from_stm32_flash()
+        else:
+            messagebox.showerror("Invalid Source", "Please select a valid load source.")
+
+    def load_pid_values_from_gui(self):
+        if not self.local_pid_config_path.exists():
+            messagebox.showinfo(
+                "No GUI Config",
+                f"No saved PID file was found: {self.local_pid_config_path.name}"
+            )
+            self.saved_pid_status_var.set("GUI CONFIG EMPTY")
+            return False
+
+        try:
+            config = json.loads(self.local_pid_config_path.read_text(encoding="utf-8"))
+            self.apply_pid_config_to_gui(config)
+        except (OSError, json.JSONDecodeError, ValueError) as exc:
+            messagebox.showerror("Load Error", str(exc))
+            self.saved_pid_status_var.set("GUI LOAD FAILED")
+            return False
+
+        self.saved_pid_status_var.set("LOADED FROM GUI")
+        self.saved_pid_info_var.set(
+            f"PID values were loaded from {self.local_pid_config_path.name}."
+        )
+        return True
+
+    def load_pid_values_from_stm32_flash(self):
+        if self.send_uart_command("LOAD_PID_FLASH\r\n"):
+            self.saved_pid_status_var.set("STM32 LOAD REQUESTED")
+            self.saved_pid_info_var.set("STM32 Flash load command was sent.")
+            return True
+
+        return False
+
+    def handle_saved_pid_line(self, line):
+        state_match = self.SAVED_PID_STATE_PATTERN.search(line)
+
+        if not state_match:
+            return False
+
+        state = state_match.group(1).strip().upper().replace(" ", "_")
+        values = self.parse_numeric_fields(line)
+
+        mode = self.current_mode
+        mode_match = self.UART_MODE_PATTERN.search(line)
+        if mode_match:
+            mode = self.normalize_mode(mode_match.group(1))
+
+        if state in ("SAVE_OK", "LOAD_OK", "VALID"):
+            try:
+                config = {
+                    "kp": values["kp"],
+                    "ki": values["ki"],
+                    "kd": values["kd"],
+                    "setpoint": values["setpoint"],
+                    "mode": mode
+                }
+                self.apply_pid_config_to_gui(config)
+            except (KeyError, ValueError) as exc:
+                self.saved_pid_status_var.set(f"{state}: PARSE FAILED")
+                self.saved_pid_info_var.set(str(exc))
+                return True
+
+            if state == "SAVE_OK":
+                self.saved_pid_status_var.set("SAVED TO STM32 FLASH")
+                self.saved_pid_info_var.set(
+                    "STM32 confirmed that the PID values were saved to Flash."
+                )
+            elif state == "LOAD_OK":
+                self.saved_pid_status_var.set("LOADED FROM STM32 FLASH")
+                self.saved_pid_info_var.set(
+                    "STM32 loaded the saved PID values and the GUI fields were updated."
+                )
+            else:
+                self.saved_pid_status_var.set("READ FROM STM32 FLASH")
+                self.saved_pid_info_var.set(
+                    "Saved PID values were read from STM32 Flash and copied to the GUI fields."
+                )
+
+        elif state == "EMPTY":
+            self.saved_pid_status_var.set("STM32 FLASH EMPTY")
+            self.saved_pid_info_var.set(
+                "STM32 reported that there is no valid saved PID configuration."
+            )
+
+        elif state == "CLEAR_OK":
+            self.saved_pid_status_var.set("STM32 FLASH CLEARED")
+            self.saved_pid_info_var.set("STM32 Flash PID configuration was cleared.")
+
+        elif state == "BUSY":
+            self.saved_pid_status_var.set("STM32 FLASH BUSY")
+            self.saved_pid_info_var.set(
+                "STM32 rejected the request because another operation is active."
+            )
+
+        else:
+            self.saved_pid_status_var.set(state)
+            self.saved_pid_info_var.set(f"STM32 SavedPID response: {line}")
+
+        return True
+
     def on_autotune_mode_selected(self, _event=None):
         selected_label = self.autotune_mode_combo.get().strip()
         selected_mode = self.PID_AUTOTUNE_MODES.get(selected_label)
@@ -1458,7 +1814,7 @@ class PIDTemperatureControllerGUI:
         return True
 
     def parse_numeric_fields(self, line):
-        matches = self.UART_VALUE_PATTERN.findall(line)
+        matches = self.KEYED_NUMERIC_PATTERN.findall(line)
         data = {}
 
         for key, value in matches:
