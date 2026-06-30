@@ -1,6 +1,6 @@
 # STM32 BME280 PID Temperature Controller
 
-A temperature control project based on **STM32**, **BME280**, a custom **PID controller**, an **SSD1306 OLED display**, PWM actuator output, and a **Python GUI** for real-time monitoring and parameter tuning.
+A temperature control project based on **STM32**, **BME280**, a custom **PID controller**, an **STM32 relay-based PID autotuner**, an **SSD1306 OLED display**, PWM actuator output, and a **Python GUI** for real-time monitoring, parameter tuning, manual gain presets, and automatic PID tuning.
 
 The project supports both **cooling** and **heating** control modes. In cooling mode, the PID output can drive a fan. In heating mode, the PID output can drive a heater.
 
@@ -15,7 +15,7 @@ The PID output can be mapped to:
 - Fan PWM duty cycle for cooling
 - Heater PWM duty cycle for heating
 
-The STM32 firmware also sends telemetry data over UART. A Python Tkinter GUI receives this data, plots the temperature response in real time, displays environmental values, and allows the user to update PID parameters from the computer.
+The STM32 firmware also sends telemetry data over UART. A Python Tkinter GUI receives this data, plots the temperature response in real time, displays environmental values, allows the user to update PID parameters from the computer, applies manual PID gain presets, and can start an STM32-side relay autotune routine.
 
 ---
 
@@ -23,6 +23,7 @@ The STM32 firmware also sends telemetry data over UART. A Python Tkinter GUI rec
 
 - STM32 HAL-based firmware
 - Custom PID controller library
+- Custom relay-based PID autotuner module
 - Custom BME280 driver
 - BME280 temperature, humidity, and pressure measurement
 - SSD1306 OLED display support
@@ -30,10 +31,12 @@ The STM32 firmware also sends telemetry data over UART. A Python Tkinter GUI rec
 - Real-time temperature and setpoint plotting
 - PID output / PWM percentage plotting
 - Cooling and heating mode selection
-- 7 presets for PID auto-tuning
+- Manual PID gain presets in the Python GUI
+- STM32-side relay autotune with `Basic PID`, `Less Overshoot`, and `No Overshoot` modes
 - Runtime PID parameter update from GUI
 - Runtime setpoint update from GUI
 - START / STOP control over UART
+- AUTOTUNE START / STOP control over UART
 
 ---
 
@@ -61,6 +64,7 @@ The STM32 firmware also sends telemetry data over UART. A Python Tkinter GUI rec
 - STM32CubeMX configuration generated code
 - STM32 HAL drivers
 - Custom `pid.h` / `pid.c`
+- Custom `pid_autotuner.h` / `pid_autotuner.c`
 - Custom `bme280.h` / `bme280.c`
 - SSD1306 OLED library
 - `logger.h` / `logger.c`
@@ -272,9 +276,10 @@ The STM32 firmware performs the following tasks:
 4. Initializes the SSD1306 OLED display.
 5. Initializes the BME280 sensor over I2C.
 6. Initializes the PID controller.
-7. Starts PWM output.
-8. Starts interrupt-based UART reception.
-9. Runs the temperature control loop periodically.
+7. Prepares the relay-based PID autotune state variables.
+8. Starts PWM output.
+9. Starts interrupt-based UART reception.
+10. Runs either normal PID control, relay autotune, or stopped mode depending on UART commands.
 
 The control loop runs every `CONTROL_PERIOD_MS` milliseconds.
 
@@ -290,7 +295,15 @@ A 1-second control period is usually suitable for temperature control because th
 
 ## Control Loop Logic
 
-Each control cycle performs the following sequence:
+Each control cycle starts by reading the BME280 sensor and updating the measured temperature, humidity, and pressure values. After that, the firmware selects one of the active system modes:
+
+| System mode | Behavior |
+|---|---|
+| `SYSTEM_MODE_STOPPED` | Keeps PID disabled and sets the PWM output to 0%. |
+| `SYSTEM_MODE_PID_CONTROL` | Runs `PID_Compute()` using the selected heating/cooling direction and applies the PID output to PWM. |
+| `SYSTEM_MODE_AUTOTUNE` | Runs the relay autotuner instead of the normal PID controller and applies the relay output to PWM. |
+
+Normal PID control cycle:
 
 ```text
 Read BME280 sensor data
@@ -301,7 +314,18 @@ Map PID output to PWM percentage
 Update fan/heater output
 Update OLED display
 Send telemetry over UART
-Print debug log message
+```
+
+Relay autotune cycle:
+
+```text
+Read BME280 sensor data
+Update temperature, humidity, and pressure variables
+Convert temperature according to selected control mode
+Run PIDAutotuner_Run()
+Apply relay output to fan/heater PWM
+Send autotune status over UART
+Apply calculated Kp, Ki, and Kd when autotune finishes
 ```
 
 The PID output is limited between 0% and 100%:
@@ -417,10 +441,18 @@ The Python GUI sends text-based commands to STM32 over UART.
 | `SET_KI:<value>` | Alternative Ki command |
 | `KD:<value>` | Set derivative gain |
 | `SET_KD:<value>` | Alternative Kd command |
-| `START` | Enable PID control |
+| `START` | Enable normal PID control |
 | `STOP` | Disable PID control and set output to 0% |
+| `AUTOTUNE_MODE:BASIC` | Select the aggressive Ziegler-Nichols Basic PID autotune mode |
+| `AUTOTUNE_MODE:LESS_OVERSHOOT` | Select the less-overshoot autotune mode |
+| `AUTOTUNE_MODE:NO_OVERSHOOT` | Select the no-overshoot autotune mode |
+| `AUTOTUNE_CYCLES:<value>` | Set the number of relay autotune cycles |
+| `AUTOTUNE_MIN_OUTPUT:<value>` | Set relay minimum output percentage |
+| `AUTOTUNE_MAX_OUTPUT:<value>` | Set relay maximum output percentage |
+| `AUTOTUNE_START` | Start STM32-side relay autotune |
+| `AUTOTUNE_STOP` | Stop STM32-side relay autotune |
 
-Example commands:
+Normal PID example:
 
 ```text
 MODE:COOLING
@@ -431,11 +463,23 @@ KD:0.0
 START
 ```
 
+STM32 relay autotune example:
+
+```text
+MODE:COOLING
+SETPOINT:25.0
+AUTOTUNE_MODE:NO_OVERSHOOT
+AUTOTUNE_CYCLES:6
+AUTOTUNE_MIN_OUTPUT:0
+AUTOTUNE_MAX_OUTPUT:100
+AUTOTUNE_START
+```
+
 ---
 
 ## UART Telemetry Format
 
-The STM32 sends telemetry data to the Python GUI in this format:
+The STM32 sends normal telemetry data to the Python GUI in this format:
 
 ```text
 SetPoint: 25.00 Temperature: 29.40 PIDOutput: 37.50 Humidity: 45.20 Pressure: 1010.80 Mode: COOLING
@@ -452,7 +496,19 @@ Fields:
 | `Pressure` | Pressure in hPa |
 | `Mode` | Current control mode, `COOLING` or `HEATING` |
 
-The GUI parses the numeric values and plots them in real time.
+During STM32 relay autotune, the firmware sends running status messages:
+
+```text
+Autotune: RUNNING Cycle: 3 TargetCycles: 6 Temperature: 28.45 Output: 100.00 Ku: 12.700000 Tu: 8.400 Mode: COOLING Rule: NO_OVERSHOOT
+```
+
+When autotune finishes, the firmware sends the calculated values:
+
+```text
+Autotune: DONE Kp: 2.604880 Ki: 0.138927 Kd: 32.560998 Ku: 13.024399 Tu: 37.500 Rule: NO_OVERSHOOT
+```
+
+The GUI parses these messages and updates the autotune status, cycle count, relay output, `Ku`, `Tu`, and calculated `Kp`, `Ki`, and `Kd` fields.
 
 ---
 
@@ -485,8 +541,11 @@ Main GUI sections:
 - Serial connection settings
 - PID parameter inputs
 - Heating/Cooling mode selection
+- Manual PID gain presets
+- STM32 relay PID autotune controls
 - START / STOP controls
 - Live BME280 values
+- Autotune status and result values
 - Response metrics
 - Real-time graph
 
@@ -516,34 +575,33 @@ After selecting the correct COM port, click `Connect`.
 | Ki | Integral gain |
 | Kd | Derivative gain |
 | Mode | Cooling or Heating control direction |
+| Manual PID Gain Preset | Predefined gain set that fills the `Kp`, `Ki`, and `Kd` fields |
+| ZN Mode | STM32 relay autotune mode: `Basic PID`, `Less Overshoot`, or `No Overshoot` |
+| Cycles | Number of relay cycles used by the STM32 autotuner |
+| Min Output | Minimum relay output percentage during autotune |
+| Max Output | Maximum relay output percentage during autotune |
 
-When `START` is clicked, the GUI sends the selected mode, setpoint, and PID gains to STM32 before sending the `START` command.
+When `START` is clicked, the GUI sends the selected mode, setpoint, and PID gains to STM32 before sending the `START` command. When `START AUTOTUNE` is clicked, the GUI sends the selected mode, setpoint, autotune mode, cycle count, output range, and then the `AUTOTUNE_START` command.
 
 ---
 
-## PID Auto-Tuning Presets
+## Manual PID Gain Presets
 
-The Python GUI includes a **PID Auto-Tuning Presets** section. This feature allows the user to select a predefined tuning rule and automatically fill the `Kp`, `Ki`, and `Kd` input fields with the corresponding gain values.
+The Python GUI includes a **Manual PID Gain Presets** section. This feature is separate from STM32 relay autotune. It does not measure `Ku` or `Tu`; it only fills the `Kp`, `Ki`, and `Kd` input fields with predefined values.
 
-This is a preset-based tuning feature. The GUI does not run an online identification procedure by itself; instead, it applies previously calculated PID gain values for the selected rule.
+Current manual preset values:
 
-Available tuning presets:
+| Preset | Kp | Ki | Kd |
+|---|---:|---:|---:|
+| Ziegler-Nichols | 0.60 | 0.50 | 0.125 |
+| Tyreus-Luyben | 0.4545 | 2.20 | 0.1587 |
+| Ciancone-Marlin | 0.303 | 0.227 | 0.1235 |
+| Pessen Integral | 0.70 | 0.40 | 0.15 |
+| Some Overshoot | 0.33 | 0.50 | 0.33 |
+| No Overshoot | 0.20 | 0.50 | 0.33 |
+| Brewing | 8.1507 | 0.1482 | 7.0783 |
 
-| Rule | Kp | Ki | Kd | Notes |
-|---|---:|---:|---:|---|
-| Ziegler-Nichols | 7.66141138481997 | 0.4086086071903984 | 35.91286586634361 | Classic tuning rule, usually gives a faster and more aggressive response |
-| Tyreus-Luyben | 5.920181524633613 | 0.07104217829560336 | 35.239175741866745 | More conservative than Ziegler-Nichols, often useful for slower systems |
-| Ciancone-Marlin | 3.9467876830890756 | 0.46308975481578485 | 18.272165199486462 | Moderate controller response with lower proportional and derivative action |
-| Pessen Integral | 9.30314239585282 | 0.6202094930568547 | 52.46132929992192 | Aggressive tuning with strong integral and derivative action |
-| Some Overshoot | 4.341466451397983 | 0.2315448774078924 | 54.26833064247478 | Allows some overshoot while still controlling the response |
-| No Overshoot | 2.60487987083879 | 0.13892692644473545 | 32.56099838548487 | More conservative tuning intended to reduce overshoot |
-| Brewing | 104.1951948335516 | 0.8335615586684127 | 205.64841085569392 | Very aggressive gain set; use carefully with real hardware |
-
-### GUI Behavior
-
-When the user selects a tuning rule from the GUI, the corresponding `Kp`, `Ki`, and `Kd` values are written into the PID parameter input fields.
-
-If the user clicks the **SEND GAINS** button, the GUI sends only the selected PID gains to STM32:
+When a preset is selected, the corresponding values are written into the PID parameter input fields. If **SEND PRESET** is clicked, the GUI sends:
 
 ```text
 KP:<value>
@@ -551,20 +609,68 @@ KI:<value>
 KD:<value>
 ```
 
-If the user clicks **START**, the GUI sends the selected mode, setpoint, current PID gain values, and then the `START` command:
+If **START** is clicked after selecting a preset, the GUI sends the selected mode, setpoint, current PID gain values, and then the `START` command.
+
+---
+
+## STM32 Relay PID Autotune
+
+The project also includes a true STM32-side relay autotune routine. Unlike manual presets, this routine actively drives the output between minimum and maximum output levels, observes the temperature response around the setpoint, estimates `Ku` and `Tu`, and calculates new `Kp`, `Ki`, and `Kd` values.
+
+Supported autotune modes:
+
+| GUI mode | UART command | STM32 mode |
+|---|---|---|
+| Basic PID | `AUTOTUNE_MODE:BASIC` | `PID_AUTOTUNER_ZN_BASIC_PID` |
+| Less Overshoot | `AUTOTUNE_MODE:LESS_OVERSHOOT` | `PID_AUTOTUNER_ZN_LESS_OVERSHOOT` |
+| No Overshoot | `AUTOTUNE_MODE:NO_OVERSHOOT` | `PID_AUTOTUNER_ZN_NO_OVERSHOOT` |
+
+The STM32 autotuner uses these Ziegler-Nichols constants:
+
+| Mode | Kp constant | Ti constant | Td constant |
+|---|---:|---:|---:|
+| Basic PID | 0.60 | 0.50 | 0.125 |
+| Less Overshoot | 0.33 | 0.50 | 0.33 |
+| No Overshoot | 0.20 | 0.50 | 0.33 |
+
+The relay autotune output alternates between `AUTOTUNE_MIN_OUTPUT` and `AUTOTUNE_MAX_OUTPUT`. From the resulting oscillation, the firmware calculates:
 
 ```text
-MODE:COOLING
-SETPOINT:25.00
-KP:7.66141138481997
-KI:0.4086086071903984
-KD:35.91286586634361
-START
+Ku = 4d / (pi * a)
+Tu = tHigh + tLow
 ```
 
-The STM32 firmware does not need a separate `AUTOTUNE` command for this feature. It receives the selected gain values through the existing `KP`, `KI`, and `KD` UART commands and updates the active PID controller parameters at runtime.
+where `d` is the relay output amplitude and `a` is the measured input amplitude.
 
-For real fan or heater control, start with more conservative presets such as `No Overshoot` or `Tyreus-Luyben`. More aggressive presets can cause a stronger output response, especially in heating mode or when the actuator is powerful.
+The PID gains are then calculated in a form compatible with the project's PID implementation:
+
+```text
+Kp = KpConstant * Ku
+Ki = Kp / (TiConstant * Tu)
+Kd = TdConstant * Kp * Tu
+```
+
+The project's PID controller already applies `sampleTime` inside the integral and derivative terms, so the autotuner does not multiply `Ki` or divide `Kd` by the loop interval.
+
+When autotune finishes, STM32 applies the calculated gains to the active PID controller and returns to normal PID control mode.
+
+---
+
+## GUI Autotune Display
+
+During autotune, the Python GUI displays:
+
+- Autotune status
+- Current cycle and target cycle count
+- Relay output percentage
+- Calculated `Ku`
+- Calculated `Tu`
+- Result `Kp`
+- Result `Ki`
+- Result `Kd`
+- Active autotune rule
+
+When the GUI receives an `Autotune: DONE` message, it updates the result fields and writes the calculated `Kp`, `Ki`, and `Kd` values into the normal PID parameter input fields.
 
 ---
 
@@ -650,6 +756,8 @@ Thermal systems are slow, so these values may take time to become meaningful.
 3. Add the following source files to the project:
    - `pid.h`
    - `pid.c`
+   - `pid_autotuner.h`
+   - `pid_autotuner.c`
    - `bme280.h`
    - `bme280.c`
    - `logger.h`
@@ -685,9 +793,10 @@ Then:
 2. Select `115200` baudrate.
 3. Click `Connect`.
 4. Select `COOLING` or `HEATING` mode.
-5. Enter setpoint and PID gains.
-6. Click `START`.
-7. Observe temperature, setpoint, PID output, and response metrics.
+5. Enter setpoint and PID gains manually, or select a manual PID gain preset.
+6. Click `START` to run normal PID control.
+7. To run STM32 relay autotune, select the ZN mode, cycle count, min output, and max output, then click `START AUTOTUNE`.
+8. Observe temperature, setpoint, PID output, relay autotune status, calculated gains, and response metrics.
 
 ---
 
@@ -710,77 +819,7 @@ Example starting values:
 #define DEFAULT_KD 0.0f
 ```
 
-These are only starting points. Real values depend on the fan, heater, enclosure, airflow, sensor location, and thermal mass.
-
----
-
-## Troubleshooting
-
-### BME280 initialization fails
-
-Check:
-
-- I2C wiring
-- 3.3V power
-- GND connection
-- SCL/SDA pin configuration
-- BME280 address selection
-- Whether SDO is connected to GND or VCC
-
-Try switching:
-
-```c
-#define BME280_DEVICE_ADDRESS BME280_I2C_ADDR_GND
-```
-
-to:
-
-```c
-#define BME280_DEVICE_ADDRESS BME280_I2C_ADDR_VDDIO
-```
-
----
-
-### OLED does not display anything
-
-Check:
-
-- OLED I2C address in the SSD1306 library
-- I2C wiring
-- Pull-up resistors
-- Whether `ssd1306_Init()` is called
-- Whether `ssd1306_UpdateScreen()` is called
-
----
-
-### GUI connects but no graph appears
-
-Check:
-
-- STM32 is sending UART telemetry
-- Baudrate is 115200
-- Correct COM port is selected
-- `START` button was clicked
-- Telemetry contains `SetPoint`, `Temperature`, and `PIDOutput`
-
-Expected telemetry example:
-
-```text
-SetPoint: 25.00 Temperature: 29.40 PIDOutput: 37.50 Humidity: 45.20 Pressure: 1010.80 Mode: COOLING
-```
-
----
-
-### PID output stays at 0%
-
-Possible causes:
-
-- `STOP` mode is active
-- Wrong control mode is selected
-- Setpoint is not suitable for the current temperature
-- PID gains are too small
-- In cooling mode, setpoint may be above current temperature
-- In heating mode, setpoint may be below current temperature
+These are only starting points. Real values depend on the fan, heater, enclosure, airflow, sensor location, and thermal mass. The GUI can also fill the PID fields from manual gain presets or ask the STM32 firmware to calculate gains through relay autotune.
 
 ---
 
@@ -806,12 +845,14 @@ stm32-bme280-pid-temperature-controller/
 │   │   ├── Inc/
 │   │   │   ├── main.h
 │   │   │   ├── pid.h
+│   │   │   ├── pid_autotuner.h
 │   │   │   ├── bme280.h
 │   │   │   ├── logger.h
 │   │   │   └── menu.h
 │   │   └── Src/
 │   │       ├── main.c
 │   │       ├── pid.c
+│   │       ├── pid_autotuner.c
 │   │       ├── bme280.c
 │   │       ├── logger.c
 │   │       └── menu.c
@@ -831,7 +872,6 @@ stm32-bme280-pid-temperature-controller/
 Possible improvements:
 
 - Add data logging to CSV from the Python GUI
-- Add automatic PID tuning support
 - Add minimum fan speed configuration
 - Add deadband around the setpoint
 - Add heating/cooling output indicators on OLED
