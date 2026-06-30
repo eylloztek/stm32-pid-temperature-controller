@@ -50,45 +50,45 @@ class PIDTemperatureControllerGUI:
     PID_GAIN_PRESETS = {
         "Ziegler-Nichols": {
             "rule": "ziegler-nichols",
-            "kp": 0.6,
-            "ki": 0.5,
+            "kp": 0.60,
+            "ki": 0.50,
             "kd": 0.125
         },
         "Tyreus-Luyben": {
             "rule": "tyreus-luyben",
-            "kp": 5.920181524633613,
-            "ki": 0.07104217829560336,
-            "kd": 35.239175741866745
+            "kp": 0.4545,
+            "ki": 2.20,
+            "kd": 0.1587
         },
         "Ciancone-Marlin": {
             "rule": "ciancone-marlin",
-            "kp": 3.9467876830890756,
-            "ki": 0.46308975481578485,
-            "kd": 18.272165199486462
+            "kp": 0.303,
+            "ki": 0.227,
+            "kd": 0.1235
         },
         "Pessen Integral": {
             "rule": "pessen-integral",
-            "kp": 9.30314239585282,
-            "ki": 0.6202094930568547,
-            "kd": 52.46132929992192
+            "kp": 0.70,
+            "ki": 0.40,
+            "kd": 0.15
         },
         "Some Overshoot": {
             "rule": "some-overshoot",
-            "kp": 4.341466451397983,
-            "ki": 0.2315448774078924,
-            "kd": 54.26833064247478
+            "kp": 0.33,
+            "ki": 0.50,
+            "kd": 0.33
         },
         "No Overshoot": {
             "rule": "no-overshoot",
-            "kp": 2.60487987083879,
-            "ki": 0.13892692644473545,
-            "kd": 32.56099838548487
+            "kp": 0.20,
+            "ki": 0.50,
+            "kd": 0.33
         },
         "Brewing": {
             "rule": "brewing",
-            "kp": 104.1951948335516,
-            "ki": 0.8335615586684127,
-            "kd": 205.64841085569392
+            "kp": 8.1507,
+            "ki": 0.1482,
+            "kd": 7.0783
         }
     }
 
