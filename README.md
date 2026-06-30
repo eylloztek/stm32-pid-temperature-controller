@@ -1,6 +1,6 @@
 # STM32 BME280 PID Temperature Controller
 
-A temperature control project based on **STM32**, **BME280**, a custom **PID controller**, an **STM32 relay-based PID autotuner**, an **SSD1306 OLED display**, PWM actuator output, and a **Python GUI** for real-time monitoring, parameter tuning, manual gain presets, and automatic PID tuning.
+A temperature control project based on **STM32 Nucleo F446RE**, **BME280**, a custom **PID controller**, an **STM32 relay-based PID autotuner**, persistent **PID Flash storage**, an **SSD1306 OLED display**, PWM actuator output, and a **Python GUI** for real-time monitoring, parameter tuning, manual gain presets, automatic PID tuning, and saved PID configuration management.
 
 The project supports both **cooling** and **heating** control modes. In cooling mode, the PID output can drive a fan. In heating mode, the PID output can drive a heater.
 
@@ -15,7 +15,7 @@ The PID output can be mapped to:
 - Fan PWM duty cycle for cooling
 - Heater PWM duty cycle for heating
 
-The STM32 firmware also sends telemetry data over UART. A Python Tkinter GUI receives this data, plots the temperature response in real time, displays environmental values, allows the user to update PID parameters from the computer, applies manual PID gain presets, and can start an STM32-side relay autotune routine.
+The STM32 firmware also sends telemetry data over UART. A Python Tkinter GUI receives this data, plots the temperature response in real time, displays environmental values, allows the user to update PID parameters from the computer, applies manual PID gain presets, can start an STM32-side relay autotune routine, and can save or load PID settings from either a local GUI configuration file or STM32 Flash.
 
 ---
 
@@ -33,10 +33,14 @@ The STM32 firmware also sends telemetry data over UART. A Python Tkinter GUI rec
 - Cooling and heating mode selection
 - Manual PID gain presets in the Python GUI
 - STM32-side relay autotune with `Basic PID`, `Less Overshoot`, and `No Overshoot` modes
+- Persistent PID configuration storage in STM32 Flash
+- Local GUI-side PID configuration storage in `saved_pid_values.json`
+- Save/load PID settings from GUI, STM32 Flash, or both
 - Runtime PID parameter update from GUI
 - Runtime setpoint update from GUI
 - START / STOP control over UART
 - AUTOTUNE START / STOP control over UART
+- Saved PID configuration control over UART
 
 ---
 
@@ -65,10 +69,12 @@ The STM32 firmware also sends telemetry data over UART. A Python Tkinter GUI rec
 - STM32 HAL drivers
 - Custom `pid.h` / `pid.c`
 - Custom `pid_autotuner.h` / `pid_autotuner.c`
+- Custom `pid_flash_storage.h` / `pid_flash_storage.c`
 - Custom `bme280.h` / `bme280.c`
 - SSD1306 OLED library
 - `logger.h` / `logger.c`
 - `menu.h` / `menu.c`
+- Updated linker script with reserved PID Flash storage area
 
 ### Python Side
 
@@ -76,6 +82,7 @@ The STM32 firmware also sends telemetry data over UART. A Python Tkinter GUI rec
 - Tkinter
 - PySerial
 - Matplotlib
+- Built-in `json`, `pathlib`, and `datetime` modules for local PID configuration storage
 
 Install the required Python packages:
 
@@ -102,10 +109,21 @@ Tkinter is usually included with Python on Windows. On Linux, it may need to be 
 |                   | ---------------------> | Fan / Heater   |
 |                   |                        +----------------+
 |                   |
+|                   |       Internal Flash   +----------------+
+|                   | <--------------------> | Saved PID Data |
+|                   |                        +----------------+
+|                   |
 |                   |          UART          +----------------+
 |                   | <--------------------> | Python GUI     |
 +-------------------+                        +----------------+
+                                                       |
+                                                       | Local JSON file
+                                                       v
+                                              +----------------------+
+                                              | saved_pid_values.json |
+                                              +----------------------+
 ```
+
 
 ---
 
@@ -207,6 +225,40 @@ Polarity: High
 
 ---
 
+## STM32 Flash PID Storage
+
+The project can store the latest PID configuration directly in STM32 Flash. This allows the board to reuse previously tuned values without running the relay autotune routine every time.
+
+Stored values:
+
+- `Kp`
+- `Ki`
+- `Kd`
+- Temperature setpoint
+- Control mode: `COOLING` or `HEATING`
+- Magic number
+- Storage version
+- Checksum
+
+For STM32F446RE, the PID storage module uses the last Flash sector:
+
+| Item | Value |
+|---|---|
+| Flash sector | Sector 7 |
+| Start address | `0x08060000` |
+| Size | `128 KB` |
+| Storage module | `pid_flash_storage.h` / `pid_flash_storage.c` |
+
+The linker script reserves this area by reducing the application Flash region to 384 KB:
+
+```ld
+FLASH (rx) : ORIGIN = 0x08000000, LENGTH = 384K
+```
+
+This keeps the application code away from the Flash sector used for saved PID data.
+
+---
+
 ## BME280 Wiring
 
 | BME280 Pin | STM32 Connection |
@@ -277,9 +329,10 @@ The STM32 firmware performs the following tasks:
 5. Initializes the BME280 sensor over I2C.
 6. Initializes the PID controller.
 7. Prepares the relay-based PID autotune state variables.
-8. Starts PWM output.
-9. Starts interrupt-based UART reception.
-10. Runs either normal PID control, relay autotune, or stopped mode depending on UART commands.
+8. Prepares the pending STM32 Flash storage action state.
+9. Starts PWM output.
+10. Starts interrupt-based UART reception.
+11. Runs normal PID control, relay autotune, stopped mode, or pending saved-PID Flash actions depending on UART commands.
 
 The control loop runs every `CONTROL_PERIOD_MS` milliseconds.
 
@@ -302,6 +355,8 @@ Each control cycle starts by reading the BME280 sensor and updating the measured
 | `SYSTEM_MODE_STOPPED` | Keeps PID disabled and sets the PWM output to 0%. |
 | `SYSTEM_MODE_PID_CONTROL` | Runs `PID_Compute()` using the selected heating/cooling direction and applies the PID output to PWM. |
 | `SYSTEM_MODE_AUTOTUNE` | Runs the relay autotuner instead of the normal PID controller and applies the relay output to PWM. |
+
+Flash save/load operations are requested by UART commands and processed in the main loop. The UART receive interrupt only marks the requested action, while the actual Flash erase/write/read operation is handled outside the interrupt context.
 
 Normal PID control cycle:
 
@@ -451,6 +506,10 @@ The Python GUI sends text-based commands to STM32 over UART.
 | `AUTOTUNE_MAX_OUTPUT:<value>` | Set relay maximum output percentage |
 | `AUTOTUNE_START` | Start STM32-side relay autotune |
 | `AUTOTUNE_STOP` | Stop STM32-side relay autotune |
+| `SAVE_PID_FLASH` | Save the current `Kp`, `Ki`, `Kd`, setpoint, and mode to STM32 Flash |
+| `LOAD_PID_FLASH` | Load the saved PID configuration from STM32 Flash and apply it to the active PID controller |
+| `GET_PID_FLASH` | Read the saved PID configuration from STM32 Flash without starting PID control |
+| `CLEAR_PID_FLASH` | Clear the STM32 Flash PID configuration sector |
 
 Normal PID example:
 
@@ -473,6 +532,23 @@ AUTOTUNE_CYCLES:6
 AUTOTUNE_MIN_OUTPUT:0
 AUTOTUNE_MAX_OUTPUT:100
 AUTOTUNE_START
+```
+
+STM32 Flash save example:
+
+```text
+MODE:COOLING
+SETPOINT:25.0
+KP:8.0
+KI:0.05
+KD:0.0
+SAVE_PID_FLASH
+```
+
+STM32 Flash load example:
+
+```text
+LOAD_PID_FLASH
 ```
 
 ---
@@ -510,6 +586,19 @@ Autotune: DONE Kp: 2.604880 Ki: 0.138927 Kd: 32.560998 Ku: 13.024399 Tu: 37.500 
 
 The GUI parses these messages and updates the autotune status, cycle count, relay output, `Ku`, `Tu`, and calculated `Kp`, `Ki`, and `Kd` fields.
 
+STM32 Flash storage responses use the `SavedPID` prefix:
+
+```text
+SavedPID: SAVE_OK Kp: 8.000000 Ki: 0.050000 Kd: 0.000000 SetPoint: 25.00 Mode: COOLING
+SavedPID: LOAD_OK Kp: 8.000000 Ki: 0.050000 Kd: 0.000000 SetPoint: 25.00 Mode: COOLING
+SavedPID: VALID Kp: 8.000000 Ki: 0.050000 Kd: 0.000000 SetPoint: 25.00 Mode: COOLING
+SavedPID: EMPTY Status: EMPTY
+SavedPID: CLEAR_OK Status: OK
+SavedPID: BUSY Reason: AUTOTUNE_RUNNING
+```
+
+The GUI parses `SAVE_OK`, `LOAD_OK`, and `VALID` responses and copies the received values into the normal PID parameter fields.
+
 ---
 
 ## OLED Display
@@ -543,9 +632,11 @@ Main GUI sections:
 - Heating/Cooling mode selection
 - Manual PID gain presets
 - STM32 relay PID autotune controls
+- Saved PID Values controls for GUI and STM32 Flash storage
 - START / STOP controls
 - Live BME280 values
 - Autotune status and result values
+- Saved PID status messages
 - Response metrics
 - Real-time graph
 
@@ -584,8 +675,10 @@ After selecting the correct COM port, click `Connect`.
 | Cycles | Number of relay cycles used by the STM32 autotuner |
 | Min Output | Minimum relay output percentage during autotune |
 | Max Output | Maximum relay output percentage during autotune |
+| Save to | Save destination: `GUI`, `STM32 Flash`, or `GUI + STM32 Flash` |
+| Load from | Load source: `GUI` or `STM32 Flash` |
 
-When `START` is clicked, the GUI sends the selected mode, setpoint, and PID gains to STM32 before sending the `START` command. When `START AUTOTUNE` is clicked, the GUI sends the selected mode, setpoint, autotune mode, cycle count, output range, and then the `AUTOTUNE_START` command.
+When `START` is clicked, the GUI sends the selected mode, setpoint, and PID gains to STM32 before sending the `START` command. When `START AUTOTUNE` is clicked, the GUI sends the selected mode, setpoint, autotune mode, cycle count, output range, and then the `AUTOTUNE_START` command. The Saved PID Values controls can save the current GUI PID fields locally, request a save to STM32 Flash, or load values back into the GUI fields.
 
 ---
 
@@ -678,6 +771,65 @@ When the GUI receives an `Autotune: DONE` message, it updates the result fields 
 
 ---
 
+## Saved PID Values
+
+The GUI includes a **Saved PID Values** section for reusing previously tuned PID settings. This is useful after manual tuning or after a successful STM32 relay autotune run.
+
+The save destination can be selected from:
+
+| Save destination | Behavior |
+|---|---|
+| `GUI` | Saves the current GUI `Kp`, `Ki`, `Kd`, setpoint, and mode values to a local JSON file. |
+| `STM32 Flash` | Sends the current GUI values to STM32 and then sends `SAVE_PID_FLASH`. |
+| `GUI + STM32 Flash` | Saves the same configuration both locally and to STM32 Flash. |
+
+The load source can be selected from:
+
+| Load source | Behavior |
+|---|---|
+| `GUI` | Loads values from the local `saved_pid_values.json` file into the GUI fields. |
+| `STM32 Flash` | Sends `LOAD_PID_FLASH` to STM32 and updates the GUI fields from the returned `SavedPID: LOAD_OK` response. |
+
+The local GUI file is created next to the Python GUI script:
+
+```text
+saved_pid_values.json
+```
+
+Example local GUI configuration format:
+
+```json
+{
+    "kp": 8.0,
+    "ki": 0.05,
+    "kd": 0.0,
+    "setpoint": 25.0,
+    "mode": "COOLING",
+    "saved_at": "2026-06-30T21:05:00"
+}
+```
+
+When saving to STM32 Flash, the GUI first sends the current mode, setpoint, and gain values, then sends the Flash save command:
+
+```text
+MODE:<COOLING or HEATING>
+SETPOINT:<value>
+KP:<value>
+KI:<value>
+KD:<value>
+SAVE_PID_FLASH
+```
+
+When loading from STM32 Flash, the GUI sends:
+
+```text
+LOAD_PID_FLASH
+```
+
+If STM32 returns a valid saved configuration, the GUI updates the `Set Point`, `Kp`, `Ki`, `Kd`, and `Mode` fields.
+
+---
+
 ## GUI Graph
 
 The graph displays:
@@ -758,6 +910,8 @@ Thermal systems are slow, so these values may take time to become meaningful.
    - `pid.c`
    - `pid_autotuner.h`
    - `pid_autotuner.c`
+   - `pid_flash_storage.h`
+   - `pid_flash_storage.c`
    - `bme280.h`
    - `bme280.c`
    - `logger.h`
@@ -765,8 +919,9 @@ Thermal systems are slow, so these values may take time to become meaningful.
    - `menu.h`
    - `menu.c`
    - SSD1306 source files
-4. Build the project.
-5. Flash the firmware to the STM32 board.
+4. Use the linker script version that reserves the last Flash sector for PID storage.
+5. Build the project.
+6. Flash the firmware to the STM32 board.
 
 ---
 
@@ -797,6 +952,8 @@ Then:
 6. Click `START` to run normal PID control.
 7. To run STM32 relay autotune, select the ZN mode, cycle count, min output, and max output, then click `START AUTOTUNE`.
 8. Observe temperature, setpoint, PID output, relay autotune status, calculated gains, and response metrics.
+9. Use **SAVE PID VALUES** to store the current PID settings in the GUI file, STM32 Flash, or both.
+10. Use **LOAD PID VALUES** to reuse previously saved PID settings.
 
 ---
 
@@ -819,7 +976,7 @@ Example starting values:
 #define DEFAULT_KD 0.0f
 ```
 
-These are only starting points. Real values depend on the fan, heater, enclosure, airflow, sensor location, and thermal mass. The GUI can also fill the PID fields from manual gain presets or ask the STM32 firmware to calculate gains through relay autotune.
+These are only starting points. Real values depend on the fan, heater, enclosure, airflow, sensor location, and thermal mass. The GUI can also fill the PID fields from manual gain presets or ask the STM32 firmware to calculate gains through relay autotune. After a useful set of gains is found, the same values can be saved locally or in STM32 Flash and reused later.
 
 ---
 
@@ -846,6 +1003,7 @@ stm32-bme280-pid-temperature-controller/
 │   │   │   ├── main.h
 │   │   │   ├── pid.h
 │   │   │   ├── pid_autotuner.h
+│   │   │   ├── pid_flash_storage.h
 │   │   │   ├── bme280.h
 │   │   │   ├── logger.h
 │   │   │   └── menu.h
@@ -853,13 +1011,16 @@ stm32-bme280-pid-temperature-controller/
 │   │       ├── main.c
 │   │       ├── pid.c
 │   │       ├── pid_autotuner.c
+│   │       ├── pid_flash_storage.c
 │   │       ├── bme280.c
 │   │       ├── logger.c
 │   │       └── menu.c
-│   └── Drivers/
+│   ├── Drivers/
+│   └── STM32F446RETX_FLASH_pid_storage.ld
 │
 ├── GUI/
-│   └── pid_temperature_controller_gui.py
+│   ├── pid_temperature_controller_gui.py
+│   └── saved_pid_values.json     # generated by GUI when PID values are saved locally
 │
 ├── README.md
 └── LICENSE
@@ -878,6 +1039,7 @@ Possible improvements:
 - Add alarm thresholds for temperature
 - Add selectable sample time from GUI
 - Add graph export feature
+- Add multiple named PID profiles in the GUI
 - Add separate fan and heater outputs for dual-mode control
 
 ---
