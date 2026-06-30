@@ -26,6 +26,7 @@
 #include "bme280.h"
 #include "pid.h"
 #include "pid_autotuner.h"
+#include "pid_flash_storage.h"
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -40,6 +41,14 @@ typedef enum {
 typedef enum {
 	SYSTEM_MODE_STOPPED = 0, SYSTEM_MODE_PID_CONTROL, SYSTEM_MODE_AUTOTUNE
 } SystemMode_t;
+
+typedef enum {
+	PID_FLASH_ACTION_NONE = 0,
+	PID_FLASH_ACTION_SAVE,
+	PID_FLASH_ACTION_LOAD,
+	PID_FLASH_ACTION_GET,
+	PID_FLASH_ACTION_CLEAR
+} PendingPIDFlashAction_t;
 /* USER CODE END PTD */
 
 /* Private define ------------------------------------------------------------*/
@@ -97,6 +106,11 @@ typedef enum {
 #define CMD_AUTOTUNE_MIN_OUTPUT     "AUTOTUNE_MIN_OUTPUT:"
 #define CMD_AUTOTUNE_MAX_OUTPUT     "AUTOTUNE_MAX_OUTPUT:"
 
+#define CMD_PID_FLASH_SAVE          "SAVE_PID_FLASH"
+#define CMD_PID_FLASH_LOAD          "LOAD_PID_FLASH"
+#define CMD_PID_FLASH_GET           "GET_PID_FLASH"
+#define CMD_PID_FLASH_CLEAR         "CLEAR_PID_FLASH"
+
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -142,6 +156,7 @@ char messageBuffer[RX_BUFFER_SIZE];
 uint8_t bufferIndex = 0;
 
 volatile uint8_t pidEnabled = 0;
+volatile PendingPIDFlashAction_t pendingPIDFlashAction = PID_FLASH_ACTION_NONE;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -161,6 +176,17 @@ static void SetFanPWMPercent(float percent);
 static void StartAutotune(void);
 static void StopAutotune(void);
 static void ApplyAutotuneGainsToPID(void);
+static PIDFlashStorage_Mode_t GetFlashStorageModeFromControlMode(void);
+static void FillPIDFlashConfigFromCurrentSettings(
+		PIDFlashStorage_Config_t *config);
+static void ApplyPIDFlashConfigToController(
+		const PIDFlashStorage_Config_t *config);
+static void RequestPIDFlashAction(PendingPIDFlashAction_t action);
+static void ProcessPendingPIDFlashAction(void);
+static void SendPIDFlashConfig(const char *state,
+		const PIDFlashStorage_Config_t *config);
+static void SendPIDFlashStatus(const char *state,
+		PIDFlashStorage_Status_t status);
 static void SendTelemetry(void);
 static void SendAutotuneStatus(void);
 static void SendAutotuneDone(void);
@@ -286,6 +312,158 @@ static void ApplyAutotuneGainsToPID(void) {
 	PID_SetKd(&pid, tunedKd);
 	PID_Reset(&pid);
 	ApplyTemperatureSetPoint();
+}
+
+static PIDFlashStorage_Mode_t GetFlashStorageModeFromControlMode(void) {
+	if (controlMode == TEMPERATURE_CONTROL_COOLING) {
+		return PID_FLASH_STORAGE_MODE_COOLING;
+	}
+
+	return PID_FLASH_STORAGE_MODE_HEATING;
+}
+
+static void FillPIDFlashConfigFromCurrentSettings(
+		PIDFlashStorage_Config_t *config) {
+	if (config == 0) {
+		return;
+	}
+
+	config->kp = PID_GetKp(&pid);
+	config->ki = PID_GetKi(&pid);
+	config->kd = PID_GetKd(&pid);
+	config->setpoint = temperatureSetPoint;
+	config->mode = (uint32_t) GetFlashStorageModeFromControlMode();
+}
+
+static void ApplyPIDFlashConfigToController(
+		const PIDFlashStorage_Config_t *config) {
+	if (config == 0) {
+		return;
+	}
+
+	PID_SetKp(&pid, config->kp);
+	PID_SetKi(&pid, config->ki);
+	PID_SetKd(&pid, config->kd);
+	temperatureSetPoint = config->setpoint;
+
+	if (config->mode == PID_FLASH_STORAGE_MODE_COOLING) {
+		controlMode = TEMPERATURE_CONTROL_COOLING;
+	} else {
+		controlMode = TEMPERATURE_CONTROL_HEATING;
+	}
+
+	ApplyTemperatureSetPoint();
+	PID_Reset(&pid);
+}
+
+static void RequestPIDFlashAction(PendingPIDFlashAction_t action) {
+	if (pendingPIDFlashAction == PID_FLASH_ACTION_NONE) {
+		pendingPIDFlashAction = action;
+	}
+}
+
+static void SendPIDFlashConfig(const char *state,
+		const PIDFlashStorage_Config_t *config) {
+	const char *modeString = "HEATING";
+
+	if (config == 0) {
+		return;
+	}
+
+	if (config->mode == PID_FLASH_STORAGE_MODE_COOLING) {
+		modeString = "COOLING";
+	}
+
+	snprintf(uartTXBuffer, sizeof(uartTXBuffer),
+			"SavedPID: %s Kp: %.6f Ki: %.6f Kd: %.6f SetPoint: %.2f Mode: %s\r\n",
+			state, config->kp, config->ki, config->kd, config->setpoint,
+			modeString);
+
+	HAL_UART_Transmit(&huart2, (uint8_t*) uartTXBuffer, strlen(uartTXBuffer),
+	HAL_MAX_DELAY);
+}
+
+static void SendPIDFlashStatus(const char *state,
+		PIDFlashStorage_Status_t status) {
+	snprintf(uartTXBuffer, sizeof(uartTXBuffer), "SavedPID: %s Status: %s\r\n",
+			state, PIDFlashStorage_StatusToString(status));
+
+	HAL_UART_Transmit(&huart2, (uint8_t*) uartTXBuffer, strlen(uartTXBuffer),
+	HAL_MAX_DELAY);
+}
+
+static void ProcessPendingPIDFlashAction(void) {
+	PendingPIDFlashAction_t action = pendingPIDFlashAction;
+	PIDFlashStorage_Config_t config;
+	PIDFlashStorage_Status_t status;
+
+	if (action == PID_FLASH_ACTION_NONE) {
+		return;
+	}
+
+	pendingPIDFlashAction = PID_FLASH_ACTION_NONE;
+
+	if ((systemMode == SYSTEM_MODE_AUTOTUNE)
+			&& (action != PID_FLASH_ACTION_GET)) {
+		snprintf(uartTXBuffer, sizeof(uartTXBuffer),
+				"SavedPID: BUSY Reason: AUTOTUNE_RUNNING\r\n");
+		HAL_UART_Transmit(&huart2, (uint8_t*) uartTXBuffer,
+				strlen(uartTXBuffer),
+				HAL_MAX_DELAY);
+		return;
+	}
+
+	switch (action) {
+	case PID_FLASH_ACTION_SAVE:
+		FillPIDFlashConfigFromCurrentSettings(&config);
+		status = PIDFlashStorage_Save(&config);
+
+		if (status == PID_FLASH_STORAGE_OK) {
+			SendPIDFlashConfig("SAVE_OK", &config);
+		} else {
+			SendPIDFlashStatus("SAVE_ERROR", status);
+		}
+		break;
+
+	case PID_FLASH_ACTION_LOAD:
+		status = PIDFlashStorage_Load(&config);
+
+		if (status == PID_FLASH_STORAGE_OK) {
+			ApplyPIDFlashConfigToController(&config);
+			SendPIDFlashConfig("LOAD_OK", &config);
+		} else if (status == PID_FLASH_STORAGE_EMPTY) {
+			SendPIDFlashStatus("EMPTY", status);
+		} else {
+			SendPIDFlashStatus("LOAD_ERROR", status);
+		}
+		break;
+
+	case PID_FLASH_ACTION_GET:
+		status = PIDFlashStorage_Load(&config);
+
+		if (status == PID_FLASH_STORAGE_OK) {
+			SendPIDFlashConfig("VALID", &config);
+		} else if (status == PID_FLASH_STORAGE_EMPTY) {
+			SendPIDFlashStatus("EMPTY", status);
+		} else {
+			SendPIDFlashStatus("INVALID", status);
+		}
+		break;
+
+	case PID_FLASH_ACTION_CLEAR:
+		status = PIDFlashStorage_Clear();
+
+		if (status == PID_FLASH_STORAGE_OK) {
+			SendPIDFlashStatus("CLEAR_OK", status);
+		} else {
+			SendPIDFlashStatus("CLEAR_ERROR", status);
+		}
+		break;
+
+	case PID_FLASH_ACTION_NONE:
+	default:
+		break;
+	}
 }
 
 static void SendTelemetry(void) {
@@ -440,6 +618,14 @@ static void ProcessUARTCommand(char *command) {
 		StartAutotune();
 	} else if (strcmp(command, CMD_AUTOTUNE_STOP) == 0) {
 		StopAutotune();
+	} else if (strcmp(command, CMD_PID_FLASH_SAVE) == 0) {
+		RequestPIDFlashAction(PID_FLASH_ACTION_SAVE);
+	} else if (strcmp(command, CMD_PID_FLASH_LOAD) == 0) {
+		RequestPIDFlashAction(PID_FLASH_ACTION_LOAD);
+	} else if (strcmp(command, CMD_PID_FLASH_GET) == 0) {
+		RequestPIDFlashAction(PID_FLASH_ACTION_GET);
+	} else if (strcmp(command, CMD_PID_FLASH_CLEAR) == 0) {
+		RequestPIDFlashAction(PID_FLASH_ACTION_CLEAR);
 	}
 }
 /* USER CODE END 0 */
@@ -536,6 +722,8 @@ int main(void) {
 		/* USER CODE END WHILE */
 
 		/* USER CODE BEGIN 3 */
+		ProcessPendingPIDFlashAction();
+
 		uint32_t currentTime = HAL_GetTick();
 
 		if (currentTime - lastControlTime >= CONTROL_PERIOD_MS) {

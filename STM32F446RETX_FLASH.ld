@@ -42,10 +42,17 @@ _Min_Heap_Size = 0x200; /* required amount of heap */
 _Min_Stack_Size = 0x400; /* required amount of stack */
 
 /* Memories definition */
+/*
+ * STM32F446RE has 512 KB Flash. The last 128 KB sector is reserved for
+ * PID Flash storage.
+ *
+ * Application Flash area : 0x08000000 - 0x0805FFFF  (384 KB)
+ * PID storage sector    : 0x08060000 - 0x0807FFFF  (128 KB, Sector 7)
+ */
 MEMORY
 {
   RAM    (xrw)    : ORIGIN = 0x20000000,   LENGTH = 128K
-  FLASH    (rx)    : ORIGIN = 0x8000000,   LENGTH = 512K
+  FLASH    (rx)    : ORIGIN = 0x8000000,   LENGTH = 384K
 }
 
 /* Sections */
